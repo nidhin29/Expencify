@@ -18,8 +18,3 @@ To guarantee 100% accurate background SMS detection loops, the application deman
 1. **SMS Receiving Permission** (`Permission.sms`)
 2. **Ignore Battery Optimizations** (`Permission.ignoreBatteryOptimizations` trigger to bypass power saver rules).
 
----
-
-## 📦 Build Configurations
-
-Includes enabling core **R8 minification and resource shrinking** natively to decrease release APK file size boundaries dimensions flawlessly when publishing to play store nodes!
