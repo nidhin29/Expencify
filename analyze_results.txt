@@ -1,0 +1,57 @@
+Analyzing expencify...                                          
+
+  error - Target of URI doesn't exist: '../../core/database/database_helper.dart' - lib\application\services\ai\ai_service.dart:6:8 - uri_does_not_exist
+   info - The 'if' statement could be replaced by a null-aware assignment - lib\application\services\ai\ai_service.dart:379:7 - prefer_conditional_assignment
+  error - The method 'DatabaseHelper' isn't defined for the type 'AIService' - lib\application\services\ai\ai_service.dart:421:16 - undefined_method
+  error - Target of URI doesn't exist: '../../core/database/database_helper.dart' - lib\application\services\auth\auth_service.dart:4:8 - uri_does_not_exist
+  error - Undefined class 'DatabaseHelper' - lib\application\services\auth\auth_service.dart:10:9 - undefined_class
+  error - The method 'DatabaseHelper' isn't defined for the type 'AuthService' - lib\application\services\auth\auth_service.dart:10:30 - undefined_method
+  error - Target of URI doesn't exist: '../../models/transaction.dart' - lib\application\services\csv\csv_service.dart:4:8 - uri_does_not_exist
+  error - Target of URI doesn't exist: '../../models/account.dart' - lib\application\services\csv\csv_service.dart:5:8 - uri_does_not_exist
+  error - The name 'TransactionModel' isn't a type, so it can't be used as a type argument - lib\application\services\csv\csv_service.dart:10:10 - non_type_as_type_argument
+  error - The name 'Account' isn't a type, so it can't be used as a type argument - lib\application\services\csv\csv_service.dart:11:10 - non_type_as_type_argument
+   info - Don't invoke 'print' in production code - lib\application\services\ocr\ocr_service.dart:27:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\application\services\ocr\ocr_service.dart:52:7 - avoid_print
+  error - Target of URI doesn't exist: '../../models/transaction.dart' - lib\application\services\pdf\pdf_service.dart:5:8 - uri_does_not_exist
+  error - Target of URI doesn't exist: '../../models/account.dart' - lib\application\services\pdf\pdf_service.dart:6:8 - uri_does_not_exist
+  error - The name 'TransactionModel' isn't a type, so it can't be used as a type argument - lib\application\services\pdf\pdf_service.dart:11:10 - non_type_as_type_argument
+  error - The name 'Account' isn't a type, so it can't be used as a type argument - lib\application\services\pdf\pdf_service.dart:12:10 - non_type_as_type_argument
+   info - Statements in an if should be enclosed in a block - lib\application\services\pdf\pdf_service.dart:35:9 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\pdf\pdf_service.dart:37:9 - curly_braces_in_flow_control_structures
+  error - Target of URI doesn't exist: '../../core/database/database_helper.dart' - lib\application\services\sms\background_sms_handler.dart:4:8 - uri_does_not_exist
+  error - The function 'DatabaseHelper' isn't defined - lib\application\services\sms\background_sms_handler.dart:28:14 - undefined_function
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:212:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:226:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:238:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:250:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:262:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:275:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:277:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:287:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:298:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:309:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:318:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:325:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\application\services\sms\sms_parser_service.dart:327:7 - curly_braces_in_flow_control_structures
+   info - Don't invoke 'print' in production code - lib\application\services\voice\voice_service.dart:10:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\application\services\voice\voice_service.dart:31:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\application\services\voice\voice_service.dart:39:7 - avoid_print
+   info - Don't invoke 'print' in production code - lib\application\services\voice\voice_service.dart:67:7 - avoid_print
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\auth\register_screen.dart:115:23 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\auth\register_screen.dart:146:23 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\auth\register_screen.dart:148:23 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\auth\register_screen.dart:174:23 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\home\home_screen.dart:314:15 - curly_braces_in_flow_control_structures
+   info - Don't use 'BuildContext's across async gaps - lib\presentation\screens\home\home_screen.dart:1609:30 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps - lib\presentation\screens\home\home_screen.dart:1713:39 - use_build_context_synchronously
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\reports\reports_screen.dart:134:7 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\reports\reports_screen.dart:182:27 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\security\lock_screen.dart:166:13 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\security\lock_screen.dart:168:13 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\security\lock_screen.dart:170:13 - curly_braces_in_flow_control_structures
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check - lib\presentation\screens\settings\settings_screen.dart:181:19 - use_build_context_synchronously
+   info - Statements in an if should be enclosed in a block - lib\presentation\screens\transactions\transaction_entry_screen.dart:148:7 - curly_braces_in_flow_control_structures
+   info - The 'if' statement could be replaced by a null-aware assignment - lib\presentation\screens\transactions\transaction_entry_screen.dart:156:7 - prefer_conditional_assignment
+   info - The 'if' statement could be replaced by a null-aware assignment - lib\presentation\screens\transactions\transaction_entry_screen.dart:769:11 - prefer_conditional_assignment
+
+53 issues found. (ran in 8.9s)
