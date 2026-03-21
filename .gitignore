@@ -54,3 +54,4 @@ debug_*.dart
 *.p12
 *.keystore
 key.properties
+local.properties
