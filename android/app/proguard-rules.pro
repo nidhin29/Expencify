@@ -8,6 +8,8 @@
 # ML Kit (used by text recognition)
 -keep class com.google.mlkit.** { *; }
 -keep interface com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_** { *; }
+-keep class com.google.android.gms.tasks.** { *; }
 -dontwarn com.google.mlkit.**
 
 # Keep specific missing classes mentioned in build errors

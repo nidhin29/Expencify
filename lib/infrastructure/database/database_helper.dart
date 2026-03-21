@@ -396,6 +396,9 @@ class DatabaseHelper {
       await txn.delete('reminders');
       await txn.delete('appliances');
       await txn.delete('categories');
+
+      await _insertDefaultCategories(txn);
+      await _insertDefaultAccount(txn);
     });
   }
 

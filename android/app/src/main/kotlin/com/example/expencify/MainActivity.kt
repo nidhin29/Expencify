@@ -45,4 +45,12 @@ class MainActivity : FlutterFragmentActivity() {
         FlutterEngineCache.getInstance().remove("main_engine")
         super.onDestroy()
     }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        try {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        } catch (e: Exception) {
+            Log.e("EXPENCIFY_MAIN", "onRequestPermissionsResult absorbed exception: ${e.message}")
+        }
+    }
 }

@@ -13,6 +13,11 @@ import 'package:expencify/application/services/csv/csv_service.dart';
 import 'package:expencify/application/services/pdf/pdf_service.dart';
 import 'package:expencify/application/services/security/security_service.dart';
 import 'package:expencify/presentation/screens/settings/smart_rules_screen.dart';
+import 'package:expencify/presentation/screens/auth/splash_screen.dart';
+import 'package:expencify/application/blocs/account/account_bloc.dart';
+import 'package:expencify/application/blocs/account/account_event.dart';
+import 'package:expencify/application/blocs/transaction/transaction_bloc.dart';
+import 'package:expencify/application/blocs/transaction/transaction_event.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -195,7 +200,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text('Wipe All Data?'),
         content: const Text(
           'This will permanently delete all your transactions, accounts, budgets and goals. '
-          'Your account (login) will be kept, but all financial data will be gone. This cannot be undone.',
+          'All financial data will be gone. This cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -220,12 +225,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Clear the account selection — the account no longer exists
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('selected_account_id');
+
     if (mounted) {
+      // Refresh BLoC state so components lose old cached references
+      context.read<AccountBloc>().add(LoadAccounts());
+      context.read<TransactionBloc>().add(const LoadTransactions());
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('All data wiped. Your account is still active.'),
           backgroundColor: Colors.orange,
         ),
+      );
+
+      // Redirect to SplashScreen to cleanly re-orient flow and reload Home
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const SplashScreen()),
+        (route) => false,
       );
     }
   }
@@ -363,7 +379,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildSwitchTile(
                 theme,
                 Icons.fingerprint_rounded,
-                'Use Fingerprint',
+                'Use Biometrics',
                 _biometricEnabled,
                 (v) async {
                   if (v) await _authService.authenticateWithBiometrics();

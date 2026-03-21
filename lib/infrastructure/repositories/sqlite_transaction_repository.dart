@@ -162,7 +162,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     required DateTime to,
     int? accountId,
   }) async {
-    String where = 'type = ? AND date >= ? AND date <= ?';
+    String where = 'type = ? AND date >= ? AND date <= ? AND parent_id IS NULL';
     List<dynamic> args = [type, from.toIso8601String(), to.toIso8601String()];
     if (accountId != null) {
       where += ' AND account_id = ?';
@@ -187,7 +187,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     final now = DateTime.now();
     final from = DateTime(now.year, now.month, 1);
     String query =
-        'SELECT SUM(amount) as total FROM transactions WHERE type=? AND date>=?';
+        'SELECT SUM(amount) as total FROM transactions WHERE type=? AND date>=? AND parent_id IS NULL';
     List<dynamic> args = [type, from.toIso8601String()];
     if (accountId != null) {
       query += ' AND account_id = ?';
@@ -204,7 +204,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     DateTime? to,
     int? accountId,
   }) async {
-    String where = 'type = ?';
+    String where = 'type = ? AND parent_id IS NULL';
     List<dynamic> args = [type];
 
     if (accountId != null) {
@@ -233,7 +233,7 @@ class SqliteTransactionRepository implements TransactionRepository {
     final from = DateTime(now.year, now.month - months + 1, 1);
     final rows = await _db.rawQuery(
       '''SELECT strftime('%Y-%m', date) as month, type, SUM(amount) as total 
-         FROM transactions WHERE date >= ?
+         FROM transactions WHERE date >= ? AND parent_id IS NULL
          GROUP BY month, type ORDER BY month''',
       [from.toIso8601String()],
     );
@@ -255,7 +255,7 @@ class SqliteTransactionRepository implements TransactionRepository {
       '''
       SELECT strftime('%Y-%m', date) as month, SUM(amount) as total 
       FROM transactions 
-      WHERE type = ? AND date >= ? AND date <= ?
+      WHERE type = ? AND date >= ? AND date <= ? AND parent_id IS NULL
       GROUP BY month
       ''',
       [type, from.toIso8601String(), to.toIso8601String()],

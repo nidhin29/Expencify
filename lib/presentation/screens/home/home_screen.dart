@@ -76,8 +76,8 @@ class _HomeScreenState extends State<HomeScreen>
   bool _loading = true;
   bool _isListening = false;
   bool _isAiThinking = false;
-  bool _requirementsMet = false;
-  bool _checkingRequirements = true;
+  bool _requirementsMet =
+      true; // Assume met on startup to prevent spinner flashing
   final _voiceService = VoiceService();
   final _aiService = AIService();
   final _ocrService = OCRService();
@@ -151,7 +151,6 @@ class _HomeScreenState extends State<HomeScreen>
     if (mounted) {
       setState(() {
         _requirementsMet = sms && battery && ai;
-        _checkingRequirements = false;
       });
     }
   }
@@ -185,9 +184,10 @@ class _HomeScreenState extends State<HomeScreen>
     // Default to this month if no filter set
     DateTime? from = _filterDateFrom;
     DateTime? to = _filterDateTo;
-    if (from == null && _dateLabel == 'This month') {
+    if (from == null && _dateLabel.toLowerCase() == 'this month') {
       final now = DateTime.now();
       from = DateTime(now.year, now.month, 1);
+      to = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
     }
 
     final income = await transactionRepo.getRangeTotal(
@@ -265,9 +265,7 @@ class _HomeScreenState extends State<HomeScreen>
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    if (_checkingRequirements) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    // Intermediate requirements check screen removed to avoid flashing spinners
 
     if (!_requirementsMet) {
       return SetupRequiredScreen(
@@ -287,10 +285,19 @@ class _HomeScreenState extends State<HomeScreen>
         floatingActionButton: _buildVoiceButton(),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
         bottomNavigationBar: _buildBottomNav(theme),
-        body: BlocListener<TransactionBloc, TransactionState>(
-          listener: (context, state) {
-            if (state is TransactionLoaded) _loadData(silent: true);
-          },
+        body: MultiBlocListener(
+          listeners: [
+            BlocListener<TransactionBloc, TransactionState>(
+              listener: (context, state) {
+                if (state is TransactionLoaded) _loadData(silent: true);
+              },
+            ),
+            BlocListener<AccountBloc, AccountState>(
+              listener: (context, state) {
+                if (state is AccountLoaded) _loadData(silent: true);
+              },
+            ),
+          ],
           child: Container(
             decoration: BoxDecoration(color: colorScheme.surface),
             child: Stack(
@@ -1795,11 +1802,14 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() => _isListening = false);
     } else {
       setState(() => _isListening = true);
-      _voiceService.startListening((text) {
+      bool started = await _voiceService.startListening((text) {
         if (text.isNotEmpty) {
           _handleVoiceCommand(text);
         }
       });
+      if (!started && mounted) {
+        setState(() => _isListening = false);
+      }
     }
   }
 
@@ -1843,13 +1853,20 @@ class _HomeScreenState extends State<HomeScreen>
     final selectedId = accountState is AccountLoaded
         ? accountState.selectedAccountId
         : null;
+
+    int fallbackId = 1;
+    if (accountState is AccountLoaded && accountState.accounts.isNotEmpty) {
+      fallbackId = accountState.accounts.first.id ?? 1;
+    }
+    final targetAccountId = selectedId ?? fallbackId;
+
     final transactionRepo = context.read<TransactionRepository>();
 
     if (action.type == AIActionType.add) {
       // Streamlined Direct Save: If we have amount and category, save immediately
       if (action.amount != null && action.amount! > 0) {
         final t = TransactionModel(
-          accountId: selectedId ?? 1, // Fallback to primary if none selected
+          accountId: targetAccountId,
           amount: action.amount!,
           category: action.category ?? 'Other',
           merchant: action.merchant ?? '',

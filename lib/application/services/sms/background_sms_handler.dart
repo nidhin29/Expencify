@@ -195,15 +195,39 @@ Future<void> processSms(String body, {DateTime? date}) async {
       }
       accountId = matched.first.id!;
     } else {
-      // No account digits in SMS — only save if there's exactly 1 account
-      // (ambiguous which account it belongs to when multiple exist)
       if (accountsList.length > 1) {
         debugPrint(
           '>>> [EXPENCIFY] SMS has no account digits and multiple accounts exist — ignored.',
         );
         return;
       }
-      accountId = accountsList.first.id!;
+
+      final onlyAccount = accountsList.first;
+
+      // 1. Safety Rule: Discard bound to default Cash account
+      if (onlyAccount.bankName.toLowerCase() == 'cash' ||
+          onlyAccount.accountNumber.toUpperCase() == 'CASH') {
+        debugPrint(
+          '>>> [EXPENCIFY] SMS has no account digits and the only account is Cash — ignored.',
+        );
+        return;
+      }
+
+      // 2. Safety Rule: Strict Name Containment Check
+      bool matchesBankName =
+          body.toLowerCase().contains(
+            onlyAccount.bankName.replaceAll(' ', '').toLowerCase(),
+          ) ||
+          body.toLowerCase().contains(onlyAccount.bankName.toLowerCase());
+
+      if (!matchesBankName) {
+        debugPrint(
+          '>>> [EXPENCIFY] SMS has no account digits and didn\'t match account Bank Name (${onlyAccount.bankName}) — ignored.',
+        );
+        return;
+      }
+
+      accountId = onlyAccount.id!;
     }
 
     // ── PERFECT DUPLICATE GUARD ─────────────────────────────────────────────

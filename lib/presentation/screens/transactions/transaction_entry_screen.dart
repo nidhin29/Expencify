@@ -662,10 +662,16 @@ class _TransactionEntryScreenState extends State<TransactionEntryScreen>
           final accounts = state.accounts;
           if (accounts.isEmpty) return const SizedBox.shrink();
 
-          _selectedAccountId ??= state.selectedAccountId ?? accounts.first.id;
+          final validValue = accounts.any((a) => a.id == _selectedAccountId)
+              ? _selectedAccountId
+              : state.selectedAccountId ?? accounts.first.id;
+
+          if (_selectedAccountId != validValue) {
+            _selectedAccountId = validValue;
+          }
 
           return DropdownButtonFormField<int>(
-            value: _selectedAccountId,
+            value: validValue,
             decoration: const InputDecoration(
               labelText: 'Account',
               prefixIcon: Icon(Icons.account_balance_wallet_rounded),

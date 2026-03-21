@@ -1,5 +1,6 @@
 import 'dart:developer';
 
+import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 class VoiceService {
@@ -7,18 +8,28 @@ class VoiceService {
 
   Future<bool> initSpeech() async {
     try {
-      return await _speechToText.initialize();
+      // Explicitly check for microphone permission first to avoid plugin-level crashes
+      var status = await Permission.microphone.status;
+      if (status.isDenied) {
+        status = await Permission.microphone.request();
+        if (!status.isGranted) return false;
+      }
+
+      return await _speechToText.initialize(
+        onError: (error) => log('Speech Error: $error'),
+        onStatus: (status) => log('Speech Status: $status'),
+      );
     } catch (e) {
       log('Speech Init Error: $e');
       return false;
     }
   }
 
-  Future<void> startListening(Function(String) onResult) async {
+  Future<bool> startListening(Function(String) onResult) async {
     try {
       if (!_speechToText.isAvailable) {
         bool ok = await initSpeech();
-        if (!ok) return;
+        if (!ok) return false;
       }
       await _speechToText.listen(
         onResult: (result) {
@@ -33,8 +44,10 @@ class VoiceService {
           seconds: 15,
         ), // Wait 15 seconds of absolute silence before auto-stopping
       );
+      return true;
     } catch (e) {
       log('Speech Listen Error: $e');
+      return false;
     }
   }
 
