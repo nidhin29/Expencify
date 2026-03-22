@@ -261,8 +261,14 @@ class AIService {
       final bytes = await file.length();
       debugPrint('AI: Loading model from: $foundModelPath ($bytes bytes)');
 
-      if (bytes == 0) {
-        debugPrint('AI Error: Model file is empty.');
+      if (bytes < metadata.minSize) {
+        debugPrint(
+          'AI Error: Model file is too small ($bytes bytes). Expected at least ${metadata.minSize} bytes. Deleting corrupt file.',
+        );
+        try {
+          await file.delete();
+          debugPrint('AI: Deleted corrupt model file: $foundModelPath');
+        } catch (_) {}
         _initialized = false;
         return;
       }
@@ -279,6 +285,21 @@ class AIService {
       } catch (e) {
         debugPrint('AI Initialization Error: $e');
         _initialized = false;
+        // Automatic recovery: Deleting corrupt model file so it restores fresh download state
+        try {
+          final file = File(foundModelPath);
+          if (await file.exists()) {
+            await file.delete();
+            debugPrint('AI: Deleted corrupt model file: $foundModelPath');
+          }
+
+          final devPath = '/sdcard/Download/${metadata.fileName}';
+          final devFile = File(devPath);
+          if (await devFile.exists()) {
+            await devFile.delete();
+            debugPrint('AI: Deleted corrupt sideload file: $devPath');
+          }
+        } catch (_) {}
       }
     } else {
       _initialized = false;
@@ -336,16 +357,36 @@ class AIService {
   ) async {
     final directory = await getApplicationDocumentsDirectory();
     final modelPath = '${directory.path}/${metadata.fileName}';
+    final tempPath = '$modelPath.tmp';
 
-    await Dio().download(
-      metadata.url,
-      modelPath,
-      onReceiveProgress: (count, total) {
-        if (total != -1) {
-          onProgress(count / total);
+    try {
+      await Dio().download(
+        metadata.url,
+        tempPath,
+        onReceiveProgress: (count, total) {
+          if (total != -1) {
+            onProgress(count / total);
+          }
+        },
+      );
+
+      // Rename to final path ONLY after full download completes successfully
+      final tempFile = File(tempPath);
+      if (await tempFile.exists()) {
+        await tempFile.rename(modelPath);
+        debugPrint('AI: Model download and rename complete.');
+      }
+    } catch (e) {
+      debugPrint('AI Download Error: $e');
+      // Cleanup temp file on failure
+      try {
+        final tempFile = File(tempPath);
+        if (await tempFile.exists()) {
+          await tempFile.delete();
         }
-      },
-    );
+      } catch (_) {}
+      rethrow;
+    }
     await init(metadata.id);
   }
 
@@ -476,6 +517,7 @@ class AIService {
     } catch (e) {
       debugPrint('AI Fatal Error: $e');
       await clearSession();
+      await _handleCorruptModelError(e);
       return 'Error: $e';
     }
   }
@@ -685,6 +727,7 @@ COMMAND: "''';
     } catch (e) {
       debugPrint('AI Intent Outer Error: $e');
       await clearSession();
+      await _handleCorruptModelError(e);
       return AIAction(type: AIActionType.chat, message: text);
     } finally {
       _isAiBusy = false;
@@ -884,5 +927,27 @@ COMMAND: "''';
     }
 
     return null;
+  }
+
+  Future<void> _handleCorruptModelError(Object e) async {
+    final errStr = e.toString();
+    if (errStr.contains('Unable to open zip archive') ||
+        errStr.contains('Failed to initialize engine') ||
+        errStr.contains('RuntimeException')) {
+      if (_currentModel != null) {
+        try {
+          final directory = await getApplicationDocumentsDirectory();
+          final localPath = '${directory.path}/${_currentModel!.fileName}';
+          final file = File(localPath);
+          if (await file.exists()) {
+            await file.delete();
+            debugPrint(
+              'AI: Auto-deleted corrupt model file on crash: $localPath',
+            );
+          }
+        } catch (_) {}
+      }
+      _initialized = false;
+    }
   }
 }
