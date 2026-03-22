@@ -19,7 +19,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'expencify.db');
     return await openDatabase(
       path,
-      version: 9,
+      version: 11,
       onConfigure: (db) async {
         await db.rawQuery('PRAGMA journal_mode=WAL');
       },
@@ -74,7 +74,8 @@ class DatabaseHelper {
         category TEXT,
         amount REAL,
         period TEXT,
-        start_date TEXT
+        start_date TEXT,
+        account_id INTEGER
       )
     ''');
 
@@ -96,7 +97,8 @@ class DatabaseHelper {
         saved_amount REAL DEFAULT 0,
         target_date TEXT,
         icon TEXT DEFAULT 'savings',
-        color INTEGER DEFAULT 4282532081
+        color INTEGER DEFAULT 4282532081,
+        account_id INTEGER
       )
     ''');
 
@@ -237,6 +239,25 @@ class DatabaseHelper {
     if (oldVersion < 9) {
       try {
         await db.execute('ALTER TABLE goals ADD COLUMN account_id INTEGER');
+      } catch (_) {}
+    }
+    if (oldVersion < 10) {
+      try {
+        await db.execute('ALTER TABLE budgets ADD COLUMN account_id INTEGER');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE goals ADD COLUMN account_id INTEGER');
+      } catch (_) {}
+    }
+    if (oldVersion < 11) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS processed_sms_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            body TEXT,
+            timestamp INTEGER
+          )
+        ''');
       } catch (_) {}
     }
   }

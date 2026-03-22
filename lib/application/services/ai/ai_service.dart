@@ -393,7 +393,7 @@ class AIService {
   Future<void> clearSession() async {
     await _activeSession?.close();
     _activeSession = null;
-    _activeModel = null;
+    // Retain _activeModel to avoid reallocating native model state.
     debugPrint('AI: Session cleared.');
   }
 
@@ -410,14 +410,16 @@ class AIService {
       // leaving no room for the AI to actually generate a response.
       await clearSession();
 
-      final isCpuModel = _currentModel!.fileName.contains('cpu');
-      if (isCpuModel && Platform.isAndroid) {
-        _activeModel = await FlutterGemma.getActiveModel(
-          maxTokens: 1024,
-          preferredBackend: PreferredBackend.cpu,
-        );
-      } else {
-        _activeModel = await FlutterGemma.getActiveModel(maxTokens: 1024);
+      if (_activeModel == null) {
+        final isCpuModel = _currentModel!.fileName.contains('cpu');
+        if (isCpuModel && Platform.isAndroid) {
+          _activeModel = await FlutterGemma.getActiveModel(
+            maxTokens: 1024,
+            preferredBackend: PreferredBackend.cpu,
+          );
+        } else {
+          _activeModel = await FlutterGemma.getActiveModel(maxTokens: 1024);
+        }
       }
       _activeSession = await _activeModel!.createSession(
         temperature: 0.4,

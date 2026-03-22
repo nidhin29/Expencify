@@ -250,7 +250,7 @@ class SmsMonitorService {
         final msgDate = msg.date != null
             ? DateTime.fromMillisecondsSinceEpoch(msg.date!)
             : DateTime.now();
-        await processSms(body, date: msgDate);
+        await processSms(body, date: msgDate, suppressNotification: true);
         found++;
       }
 

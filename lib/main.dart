@@ -52,9 +52,9 @@ void main() async {
   // Initialize Notification Service
   await NotificationService().init();
 
-  // Start background SMS monitoring (await so init errors are visible in logs)
+  // Start background SMS monitoring (asynchronous - doesn't block startup)
   try {
-    await SmsMonitorService().startBackgroundListening();
+    SmsMonitorService().startBackgroundListening();
   } catch (e) {
     debugPrint('>>> [main] SmsMonitorService failed: $e');
   }

@@ -136,6 +136,11 @@ class SmsTaskHandler extends TaskHandler {
   }
 
   @override
+  void onNotificationPressed() {
+    FlutterForegroundTask.launchApp();
+  }
+
+  @override
   void onRepeatEvent(DateTime timestamp) {
     processPendingSms().catchError((e) {
       debugPrint('>>> [EXPENCIFY_SVC] onRepeatEvent error: $e');
@@ -151,9 +156,45 @@ class SmsTaskHandler extends TaskHandler {
 // ─────────────────────────────────────────────────────────────────────────────
 // Core SMS processing logic with robust duplicate prevention.
 // ─────────────────────────────────────────────────────────────────────────────
-Future<void> processSms(String body, {DateTime? date}) async {
+Future<void> processSms(
+  String body, {
+  DateTime? date,
+  bool suppressNotification = false,
+}) async {
   if (body.isEmpty) return;
   final effectiveDate = date ?? DateTime.now();
+
+  // ── ATOMIC SQLITE RACE CONDITION GUARD ──────────────────────────────────
+  final cleanBody = body.trim().replaceAll(RegExp(r'\s+'), ' ');
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+  final db = await DatabaseHelper().database;
+
+  await db.execute('DELETE FROM processed_sms_log WHERE timestamp < ?', [
+    nowMs - 900000, // 15 minutes
+  ]);
+
+  final rowsAffected = await db.rawInsert(
+    '''
+    INSERT INTO processed_sms_log (body, timestamp)
+    SELECT ?, ? WHERE NOT EXISTS (
+      SELECT 1 FROM processed_sms_log 
+      WHERE body = ? AND ABS(? - timestamp) < 600000
+    )
+  ''',
+    [cleanBody, nowMs, cleanBody, nowMs],
+  );
+
+  debugPrint(
+    '>>> [EXPENCIFY] Atomic Lock RowsAffected: $rowsAffected | Body: $cleanBody',
+  );
+
+  if (rowsAffected == 0) {
+    debugPrint(
+      '>>> [EXPENCIFY] Atomic Race Condition Guard Triggered — Duplicate SMS aborted √',
+    );
+    return;
+  }
 
   try {
     final Map<String, dynamic>? data = await SmsParserService.parseSms(body);
@@ -232,12 +273,12 @@ Future<void> processSms(String body, {DateTime? date}) async {
 
     // ── PERFECT DUPLICATE GUARD ─────────────────────────────────────────────
     // Uses the exact timestamp (within a 1s window) to identify the same SMS.
-    final db = await dbHelper.database;
+    final db = await DatabaseHelper().database;
     final startRange = effectiveDate
-        .subtract(const Duration(seconds: 1))
+        .subtract(const Duration(minutes: 5))
         .toIso8601String();
     final endRange = effectiveDate
-        .add(const Duration(seconds: 1))
+        .add(const Duration(minutes: 5))
         .toIso8601String();
 
     final existing = await db.query(
@@ -245,6 +286,13 @@ Future<void> processSms(String body, {DateTime? date}) async {
       where:
           'account_id = ? AND amount = ? AND type = ? AND date BETWEEN ? AND ?',
       whereArgs: [accountId, amount, type, startRange, endRange],
+    );
+
+    debugPrint(
+      '>>> [EXPENCIFY] Duplicate Guard args: Acct=$accountId | Amt=$amount | Type=$type | Range: $startRange to $endRange',
+    );
+    debugPrint(
+      '>>> [EXPENCIFY] Duplicate Guard existing row count: ${existing.length}',
     );
 
     if (existing.isNotEmpty) {
@@ -283,18 +331,30 @@ Future<void> processSms(String body, {DateTime? date}) async {
         );
 
         if (matchedBudget != null) {
-          final now = DateTime.now();
+          final relativeNow = effectiveDate;
           DateTime startCheck = DateTime(
-            now.year,
-            now.month,
+            relativeNow.year,
+            relativeNow.month,
             1,
           ); // default monthly
 
           if (matchedBudget.period == 'weekly') {
-            startCheck = now.subtract(Duration(days: now.weekday - 1));
+            startCheck = relativeNow.subtract(
+              Duration(days: relativeNow.weekday - 1),
+            );
           } else if (matchedBudget.period == 'yearly') {
-            startCheck = DateTime(now.year, 1, 1);
+            startCheck = DateTime(relativeNow.year, 1, 1);
           }
+
+          final rawRows = await txnRepo.getTransactions(
+            accountId: accountId,
+            from: startCheck,
+            type: 'expense',
+            limit: 10,
+          );
+          debugPrint(
+            '>>> [EXPENCIFY] Test Row Count for this period ($startCheck): ${rawRows.length} item(s)',
+          );
 
           final categoryTotals = await txnRepo.getCategoryTotals(
             type: 'expense',
@@ -309,14 +369,26 @@ Future<void> processSms(String body, {DateTime? date}) async {
                   ?.value ??
               0.0;
 
+          debugPrint(
+            '>>> [EXPENCIFY] CategoryTotals Map keys: ${categoryTotals.keys.toList()} | values: ${categoryTotals.values.toList()}',
+          );
+
+          debugPrint(
+            '>>> [EXPENCIFY] Budget Check for $category: Spent=₹$currentSpent | Limit=₹${matchedBudget.amount} | AccountId=$accountId',
+          );
+
           if (currentSpent > matchedBudget.amount) {
             final overAmount = currentSpent - matchedBudget.amount;
-            await NotificationService().showInstant(
-              title: '⚠️ Budget Exceeded: $category',
-              body:
-                  'You exceeded limit by ₹${overAmount.toStringAsFixed(0)} (Total: ₹${currentSpent.toStringAsFixed(0)} / Max: ₹${matchedBudget.amount.toStringAsFixed(0)})',
-            );
-            debugPrint('>>> [EXPENCIFY] Budget Alert triggered for $category');
+            if (!suppressNotification) {
+              await NotificationService().showInstant(
+                title: '⚠️ Budget Exceeded: $category',
+                body:
+                    'You exceeded limit by ₹${overAmount.toStringAsFixed(0)} (Total: ₹${currentSpent.toStringAsFixed(0)} / Max: ₹${matchedBudget.amount.toStringAsFixed(0)})',
+              );
+              debugPrint(
+                '>>> [EXPENCIFY] Budget Alert triggered for $category',
+              );
+            }
           }
         }
       }

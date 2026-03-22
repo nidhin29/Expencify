@@ -29,20 +29,26 @@ class NotificationService {
 
     // Pre-create the 'sms_auto' channel so background isolates can use it
     // without needing to call createNotificationChannel (which needs Activity context).
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.createNotificationChannel(
-          const AndroidNotificationChannel(
-            'sms_auto',
-            'Auto Transactions',
-            description: 'Auto-detected bank SMS transactions',
-            importance: Importance.high,
-            playSound: true,
-            enableVibration: true,
-          ),
-        );
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(
+            const AndroidNotificationChannel(
+              'sms_auto',
+              'Auto Transactions',
+              description: 'Auto-detected bank SMS transactions',
+              importance: Importance.high,
+              playSound: true,
+              enableVibration: true,
+            ),
+          );
+    } catch (e) {
+      debugPrint(
+        'NotificationService: createNotificationChannel failed (BG isolate): $e',
+      );
+    }
 
     _initialized = true;
   }
