@@ -19,7 +19,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'expencify.db');
     return await openDatabase(
       path,
-      version: 11,
+      version: 12,
       onConfigure: (db) async {
         await db.rawQuery('PRAGMA journal_mode=WAL');
       },
@@ -131,6 +131,14 @@ class DatabaseHelper {
         purchase_date TEXT,
         amc_expiry_date TEXT,
         amc_amount REAL DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS processed_sms_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        body TEXT,
+        timestamp INTEGER
       )
     ''');
 
@@ -250,6 +258,17 @@ class DatabaseHelper {
       } catch (_) {}
     }
     if (oldVersion < 11) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS processed_sms_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            body TEXT,
+            timestamp INTEGER
+          )
+        ''');
+      } catch (_) {}
+    }
+    if (oldVersion < 12) {
       try {
         await db.execute('''
           CREATE TABLE IF NOT EXISTS processed_sms_log(

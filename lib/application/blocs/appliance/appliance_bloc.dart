@@ -2,6 +2,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../domain/repositories/appliance_repository.dart';
 import 'appliance_event.dart';
 import 'appliance_state.dart';
+import '../../services/notifications/notification_service.dart';
 
 class ApplianceBloc extends Bloc<ApplianceEvent, ApplianceState> {
   final ApplianceRepository _repository;
@@ -30,7 +31,15 @@ class ApplianceBloc extends Bloc<ApplianceEvent, ApplianceState> {
     Emitter<ApplianceState> emit,
   ) async {
     try {
-      await _repository.save(event.appliance);
+      final id = await _repository.save(event.appliance);
+
+      await NotificationService().scheduleApplianceAMC(
+        id: event.appliance.id ?? id,
+        name: event.appliance.name,
+        brand: event.appliance.brand,
+        amcExpiryDate: event.appliance.amcExpiryDate,
+      );
+
       add(LoadAppliances());
     } catch (e) {
       emit(ApplianceError(e.toString()));
@@ -43,6 +52,7 @@ class ApplianceBloc extends Bloc<ApplianceEvent, ApplianceState> {
   ) async {
     try {
       await _repository.delete(event.id);
+      await NotificationService().cancelApplianceAMC(event.id);
       add(LoadAppliances());
     } catch (e) {
       emit(ApplianceError(e.toString()));

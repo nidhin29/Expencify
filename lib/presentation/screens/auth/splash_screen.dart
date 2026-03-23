@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../../../application/services/ai/ai_service.dart';
+import '../../../application/services/ai/local_ai_model.dart';
 import '../../../application/services/auth/auth_service.dart';
 import '../../../application/services/security/security_service.dart';
 import '../home/home_screen.dart';
+import '../setup/setup_required_screen.dart';
 import 'onboarding_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -54,7 +58,25 @@ class _SplashScreenState extends State<SplashScreen>
     if (!onboarded) {
       nextScreen = const OnboardingScreen();
     } else {
-      nextScreen = const HomeScreen();
+      // Check Requirements before opening Home
+      final sms = await Permission.sms.isGranted;
+      final battery = await Permission.ignoreBatteryOptimizations.isGranted;
+      final ai = await AIService().modelExists(LocalAIModelType.qwenLite);
+      final requirementsMet = sms && battery && ai;
+
+      if (!mounted) return;
+
+      if (!requirementsMet) {
+        nextScreen = SetupRequiredScreen(
+          onComplete: () {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (context) => const HomeScreen()),
+            );
+          },
+        );
+      } else {
+        nextScreen = const HomeScreen();
+      }
     }
 
     final security = SecurityService();

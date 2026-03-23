@@ -161,7 +161,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                 isProcessing: _isDownloading,
                 progress: _downloadProgress,
                 onTap: _isDownloading ? null : _downloadAi,
-                actionLabel: _isDownloading ? 'Downloading...' : 'Download',
+                actionLabel: _isDownloading ? 'Initializing...' : 'Initialize',
               ),
               const SizedBox(height: 48),
               if (_hasSmsPermission &&

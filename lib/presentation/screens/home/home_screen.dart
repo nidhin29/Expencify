@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:expencify/presentation/screens/setup/setup_required_screen.dart';
-import 'package:expencify/application/services/ai/local_ai_model.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:shimmer/shimmer.dart';
@@ -76,8 +74,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool _loading = true;
   bool _isListening = false;
   bool _isAiThinking = false;
-  bool _requirementsMet =
-      true; // Assume met on startup to prevent spinner flashing
+  bool? _requirementsMet = true; // Default true, splash pre-verified it
   final _voiceService = VoiceService();
   final _aiService = AIService();
   final _ocrService = OCRService();
@@ -103,7 +100,6 @@ class _HomeScreenState extends State<HomeScreen>
 
     // Initialize AI Service
     _aiService.init();
-    _checkInitialRequirements();
 
     // Trigger Reminder load for heads-up UI
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -143,17 +139,7 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
-  Future<void> _checkInitialRequirements() async {
-    final sms = await Permission.sms.isGranted;
-    final battery = await Permission.ignoreBatteryOptimizations.isGranted;
-    final ai = await _aiService.modelExists(LocalAIModelType.qwenLite);
 
-    if (mounted) {
-      setState(() {
-        _requirementsMet = sms && battery && ai;
-      });
-    }
-  }
 
   Future<void> _loadData({bool silent = false}) async {
     if (!mounted) return;
@@ -208,6 +194,13 @@ class _HomeScreenState extends State<HomeScreen>
       limit: 8,
       accountId: selectedId,
     );
+
+    // DEBUG LOG FOR DUPLICATES
+    for (final t in recent) {
+      debugPrint(
+        '>>> [DEBUG_RECENT] ID: ${t.id} | Merchant: ${t.merchant} | Amount: ${t.amount} | Date: ${t.date.toIso8601String()}',
+      );
+    }
 
     // Dynamic Chart Data
     final nowChart = DateTime.now();
@@ -265,9 +258,11 @@ class _HomeScreenState extends State<HomeScreen>
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    // Intermediate requirements check screen removed to avoid flashing spinners
+    if (_requirementsMet == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
 
-    if (!_requirementsMet) {
+    if (!_requirementsMet!) {
       return SetupRequiredScreen(
         onComplete: () => setState(() => _requirementsMet = true),
       );
