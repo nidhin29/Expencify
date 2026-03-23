@@ -8,7 +8,6 @@ import 'package:intl/intl.dart';
 import 'local_ai_model.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:expencify/infrastructure/repositories/sqlite_account_repository.dart';
 import 'package:expencify/infrastructure/repositories/sqlite_transaction_repository.dart';
 import 'package:expencify/infrastructure/repositories/sqlite_goal_repository.dart';
@@ -179,51 +178,7 @@ class AIService {
         debugPrint('AI: Play Asset Delivery MethodChannel failed: $e');
       }
 
-      // 1b. Development Fallback: Check /sdcard/Download (PAD doesn't work in sideloaded builds)
-      if (foundModelPath == null) {
-        final devPath = '/sdcard/Download/${metadata.fileName}';
-        if (await File(devPath).exists()) {
-          debugPrint('AI: Detected model in Sideload/Download folder.');
-          final directory = await getApplicationDocumentsDirectory();
-          final localPath = '${directory.path}/${metadata.fileName}';
 
-          if (!await File(localPath).exists()) {
-            debugPrint(
-              'AI: Requesting All Files Access (Manage External Storage) for migration...',
-            );
-            // On Android 11+ we need this for direct path access to /sdcard/Download
-            if (await Permission.manageExternalStorage.isDenied) {
-              await Permission.manageExternalStorage.request();
-            }
-
-            debugPrint('AI: Copying to internal storage (Source: $devPath)...');
-            try {
-              final sourceFile = File(devPath);
-              final sourceSize = await sourceFile.length();
-              debugPrint(
-                'AI: Source file size: ${sourceSize / (1024 * 1024)} MB',
-              );
-
-              await sourceFile.copy(localPath);
-
-              final targetFile = File(localPath);
-              final targetSize = await targetFile.length();
-              debugPrint(
-                'AI: target migration complete. Target file size: ${targetSize / (1024 * 1024)} MB',
-              );
-            } catch (e) {
-              debugPrint('AI: Copy failed: $e');
-            }
-          } else {
-            final targetFile = File(localPath);
-            final size = await targetFile.length();
-            debugPrint(
-              'AI: Existing model size in internal storage: ${size / (1024 * 1024)} MB',
-            );
-          }
-          foundModelPath = localPath;
-        }
-      }
     }
 
     // 2. Fallback to Documents Directory (Manual download)
@@ -293,12 +248,7 @@ class AIService {
             debugPrint('AI: Deleted corrupt model file: $foundModelPath');
           }
 
-          final devPath = '/sdcard/Download/${metadata.fileName}';
-          final devFile = File(devPath);
-          if (await devFile.exists()) {
-            await devFile.delete();
-            debugPrint('AI: Deleted corrupt sideload file: $devPath');
-          }
+
         } catch (_) {}
       }
     } else {
@@ -333,14 +283,7 @@ class AIService {
         debugPrint('AI: modelExists PAD check failed: $e');
       }
 
-      // 1b. Dev Fallback for modelExists
-      final devPath = '/sdcard/Download/${metadata.fileName}';
-      if (await File(devPath).exists()) {
-        debugPrint(
-          'AI: Found in Sideload/Download (Migration pending): $devPath',
-        );
-        return true;
-      }
+
     }
 
     // 2. Check Local Documents
