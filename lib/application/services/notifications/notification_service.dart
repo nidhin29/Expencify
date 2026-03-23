@@ -128,7 +128,7 @@ class NotificationService {
   }) async {
     await init();
     // Notify 1 day before due
-    final notify = DateTime.now().add(const Duration(seconds: 10));
+    final notify = dueDate.subtract(const Duration(days: 1));
     if (notify.isBefore(DateTime.now())) return;
 
     const AndroidNotificationDetails androidDetails =
@@ -208,7 +208,7 @@ class NotificationService {
   }) async {
     await init();
     // Notify 7 days before EXP
-    final notify = DateTime.now().add(const Duration(seconds: 10));
+    final notify = amcExpiryDate.subtract(const Duration(days: 7));
     if (notify.isBefore(DateTime.now())) return;
 
     const AndroidNotificationDetails androidDetails =
