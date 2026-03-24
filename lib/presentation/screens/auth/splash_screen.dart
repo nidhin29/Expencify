@@ -68,9 +68,9 @@ class _SplashScreenState extends State<SplashScreen>
 
       if (!requirementsMet) {
         nextScreen = SetupRequiredScreen(
-          onComplete: () {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (context) => const HomeScreen()),
+          onComplete: (ctx) {
+            Navigator.of(ctx).pushReplacement(
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
             );
           },
         );

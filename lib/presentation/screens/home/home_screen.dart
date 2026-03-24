@@ -139,8 +139,6 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
-
-
   Future<void> _loadData({bool silent = false}) async {
     if (!mounted) return;
 
@@ -264,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (!_requirementsMet!) {
       return SetupRequiredScreen(
-        onComplete: () => setState(() => _requirementsMet = true),
+        onComplete: (_) => setState(() => _requirementsMet = true),
       );
     }
 

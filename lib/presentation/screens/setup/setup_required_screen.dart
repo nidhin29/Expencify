@@ -4,7 +4,7 @@ import 'package:expencify/application/services/ai/ai_service.dart';
 import 'package:expencify/application/services/ai/local_ai_model.dart';
 
 class SetupRequiredScreen extends StatefulWidget {
-  final VoidCallback onComplete;
+  final void Function(BuildContext context) onComplete;
   const SetupRequiredScreen({super.key, required this.onComplete});
 
   @override
@@ -168,7 +168,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                   _isBatteryOptimizationIgnored &&
                   _isAiModelInstalled)
                 ElevatedButton(
-                  onPressed: widget.onComplete,
+                  onPressed: () => widget.onComplete(context),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,

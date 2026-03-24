@@ -379,9 +379,13 @@ class _BudgetScreenState extends State<BudgetScreen> {
               final budgets = state.budgets;
               final showAll = _lastAccountId == null;
               final visibleBudgets = budgets.where((b) {
-                return showAll ||
+                final matchesAccount =
+                    showAll ||
                     b.accountId == null ||
                     b.accountId == _lastAccountId;
+                final matchesPeriod =
+                    b.period.toLowerCase() == _period.toLowerCase();
+                return matchesAccount && matchesPeriod;
               }).toList();
 
               return RefreshIndicator(

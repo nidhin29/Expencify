@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:expencify/application/services/auth/auth_service.dart';
 import 'package:expencify/presentation/screens/home/home_screen.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:expencify/application/services/ai/ai_service.dart';
+import 'package:expencify/application/services/ai/local_ai_model.dart';
+import 'package:expencify/presentation/screens/setup/setup_required_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -44,7 +48,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   void _goToHome() async {
     await _authService.setOnboarded();
-    if (mounted) {
+    if (!mounted) return;
+
+    // Check Requirements before opening Home
+    final sms = await Permission.sms.isGranted;
+    final battery = await Permission.ignoreBatteryOptimizations.isGranted;
+    final ai = await AIService().modelExists(LocalAIModelType.qwenLite);
+    final requirementsMet = sms && battery && ai;
+
+    if (!mounted) return;
+
+    if (!requirementsMet) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => SetupRequiredScreen(
+            onComplete: (ctx) {
+              Navigator.of(ctx).pushReplacement(
+                MaterialPageRoute(builder: (_) => const HomeScreen()),
+              );
+            },
+          ),
+        ),
+      );
+    } else {
       Navigator.of(
         context,
       ).pushReplacement(MaterialPageRoute(builder: (_) => const HomeScreen()));
