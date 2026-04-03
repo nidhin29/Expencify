@@ -4,6 +4,8 @@ import 'package:expencify/application/blocs/registered_entity/registered_entity_
 import 'package:expencify/application/blocs/registered_entity/registered_entity_event.dart';
 import 'package:expencify/application/blocs/registered_entity/registered_entity_state.dart';
 import 'package:expencify/domain/entities/registered_entity.dart';
+import 'package:expencify/domain/entities/category.dart';
+import 'package:expencify/domain/repositories/category_repository.dart';
 
 class SmartRulesScreen extends StatefulWidget {
   const SmartRulesScreen({super.key});
@@ -139,7 +141,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => _showAddRuleDialog(context),
+          onTap: () => _showRuleDialog(context),
           borderRadius: BorderRadius.circular(28),
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -282,13 +284,27 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
               color: theme.colorScheme.onSurface.withOpacity(0.4),
             ),
           ),
-          trailing: IconButton(
-            icon: const Icon(
-              Icons.delete_outline_rounded,
-              color: Colors.redAccent,
-              size: 20,
-            ),
-            onPressed: () => _confirmDelete(context, entity),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: Icon(
+                  Icons.edit_outlined,
+                  color: theme.colorScheme.primary,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    _showRuleDialog(context, initialEntity: entity),
+              ),
+              IconButton(
+                icon: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: Colors.redAccent,
+                  size: 20,
+                ),
+                onPressed: () => _confirmDelete(context, entity),
+              ),
+            ],
           ),
           childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
           children: [
@@ -364,11 +380,20 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
     );
   }
 
-  void _showAddRuleDialog(BuildContext context) {
-    final nameCtrl = TextEditingController();
-    final keywordCtrl = TextEditingController();
-    String selectedType = 'both';
-    String selectedCategory = 'Transfer';
+  void _showRuleDialog(
+    BuildContext context, {
+    RegisteredEntity? initialEntity,
+  }) async {
+    final nameCtrl = TextEditingController(text: initialEntity?.name);
+    final keywordCtrl = TextEditingController(text: initialEntity?.keyword);
+    String selectedType = initialEntity?.type ?? 'both';
+    String? selectedCategory = initialEntity?.category;
+
+    // Load actual categories
+    final categoryRepo = context.read<CategoryRepository>();
+    final allCategories = await categoryRepo.getAll();
+
+    if (!context.mounted) return;
 
     showModalBottomSheet(
       context: context,
@@ -405,7 +430,9 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    'Define New Rule',
+                    initialEntity == null
+                        ? 'Define New Rule'
+                        : 'Edit Smart Rule',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                       letterSpacing: -0.5,
@@ -426,7 +453,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                     label: 'SMS Keyword',
                     hint: 'The exact name in the SMS (e.g. NIKITA)',
                     icon: Icons.search_rounded,
-                    textCapitalization: TextCapitalization.characters,
+                    textCapitalization: TextCapitalization.none,
                   ),
                   const SizedBox(height: 32),
                   Text(
@@ -450,7 +477,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                         selectedType,
                         (v) {
                           selectedType = v;
-                          final categories = _getCategories(v);
+                          final categories = _getCategories(v, allCategories);
                           if (!categories.contains(selectedCategory)) {
                             selectedCategory = categories.first;
                           }
@@ -465,7 +492,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                         selectedType,
                         (v) {
                           selectedType = v;
-                          final categories = _getCategories(v);
+                          final categories = _getCategories(v, allCategories);
                           if (!categories.contains(selectedCategory)) {
                             selectedCategory = categories.first;
                           }
@@ -480,7 +507,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                         selectedType,
                         (v) {
                           selectedType = v;
-                          final categories = _getCategories(v);
+                          final categories = _getCategories(v, allCategories);
                           if (!categories.contains(selectedCategory)) {
                             selectedCategory = categories.first;
                           }
@@ -490,7 +517,11 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                   ),
                   const SizedBox(height: 24),
                   DropdownButtonFormField<String>(
-                    value: selectedCategory,
+                    value:
+                        selectedCategory ??
+                        (_getCategories(selectedType, allCategories).isNotEmpty
+                            ? _getCategories(selectedType, allCategories).first
+                            : 'Other'),
                     decoration: InputDecoration(
                       labelText: 'Assign Category',
                       prefixIcon: Icon(
@@ -514,7 +545,7 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                         ),
                       ),
                     ),
-                    items: _getCategories(selectedType)
+                    items: _getCategories(selectedType, allCategories)
                         .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                         .toList(),
                     onChanged: (v) {
@@ -530,16 +561,50 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
                         if (nameCtrl.text.isEmpty || keywordCtrl.text.isEmpty) {
                           return;
                         }
-                        context.read<RegisteredEntityBloc>().add(
-                          AddRegisteredEntity(
-                            RegisteredEntity(
-                              name: nameCtrl.text,
-                              keyword: keywordCtrl.text.trim().toUpperCase(),
-                              category: selectedCategory,
-                              type: selectedType,
+                        if (initialEntity != null) {
+                          context.read<RegisteredEntityBloc>().add(
+                            UpdateRegisteredEntity(
+                              RegisteredEntity(
+                                id: initialEntity.id,
+                                name: nameCtrl.text,
+                                keyword: keywordCtrl.text.trim(),
+                                category:
+                                    selectedCategory ??
+                                    (_getCategories(
+                                          selectedType,
+                                          allCategories,
+                                        ).isNotEmpty
+                                        ? _getCategories(
+                                            selectedType,
+                                            allCategories,
+                                          ).first
+                                        : 'Other'),
+                                type: selectedType,
+                              ),
                             ),
-                          ),
-                        );
+                          );
+                        } else {
+                          context.read<RegisteredEntityBloc>().add(
+                            AddRegisteredEntity(
+                              RegisteredEntity(
+                                name: nameCtrl.text,
+                                keyword: keywordCtrl.text.trim(),
+                                category:
+                                    selectedCategory ??
+                                    (_getCategories(
+                                          selectedType,
+                                          allCategories,
+                                        ).isNotEmpty
+                                        ? _getCategories(
+                                            selectedType,
+                                            allCategories,
+                                          ).first
+                                        : 'Other'),
+                                type: selectedType,
+                              ),
+                            ),
+                          );
+                        }
                         Navigator.pop(ctx);
                       },
                       style: ElevatedButton.styleFrom(
@@ -651,24 +716,16 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
     );
   }
 
-  List<String> _getCategories(String type) {
-    const expense = [
-      'Food',
-      'Shopping',
-      'Bills',
-      'Family',
-      'Friends',
-      'Travel',
-    ];
-    const income = ['Transfer', 'Salary', 'Refund', 'Cashback'];
-
+  List<String> _getCategories(String type, List<Category> all) {
     if (type == 'expense') {
-      return [...expense, 'Other'];
+      return all.where((c) => c.type == 'expense').map((c) => c.name).toList()
+        ..add('Other');
     }
     if (type == 'income') {
-      return [...income, 'Other'];
+      return all.where((c) => c.type == 'income').map((c) => c.name).toList()
+        ..add('Other');
     }
     // For 'both'
-    return [...income, ...expense, 'Other'];
+    return all.map((c) => c.name).toSet().toList()..add('Other');
   }
 }

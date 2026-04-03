@@ -11,6 +11,7 @@ class RegisteredEntityBloc
     on<LoadRegisteredEntities>(_onLoadRegisteredEntities);
     on<AddRegisteredEntity>(_onAddRegisteredEntity);
     on<DeleteRegisteredEntity>(_onDeleteRegisteredEntity);
+    on<UpdateRegisteredEntity>(_onUpdateRegisteredEntity);
   }
 
   Future<void> _onLoadRegisteredEntities(
@@ -44,6 +45,18 @@ class RegisteredEntityBloc
   ) async {
     try {
       await _repository.delete(event.id);
+      add(LoadRegisteredEntities());
+    } catch (e) {
+      emit(RegisteredEntityError(e.toString()));
+    }
+  }
+
+  Future<void> _onUpdateRegisteredEntity(
+    UpdateRegisteredEntity event,
+    Emitter<RegisteredEntityState> emit,
+  ) async {
+    try {
+      await _repository.update(event.entity);
       add(LoadRegisteredEntities());
     } catch (e) {
       emit(RegisteredEntityError(e.toString()));

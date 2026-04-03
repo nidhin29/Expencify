@@ -25,3 +25,11 @@ class DeleteRegisteredEntity extends RegisteredEntityEvent {
   @override
   List<Object?> get props => [id];
 }
+
+class UpdateRegisteredEntity extends RegisteredEntityEvent {
+  final RegisteredEntity entity;
+  const UpdateRegisteredEntity(this.entity);
+
+  @override
+  List<Object?> get props => [entity];
+}
