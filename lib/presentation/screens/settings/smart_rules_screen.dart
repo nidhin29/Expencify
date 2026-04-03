@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:expencify/application/blocs/registered_entity/registered_entity_bloc.dart';
 import 'package:expencify/application/blocs/registered_entity/registered_entity_event.dart';
@@ -46,6 +47,13 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
       appBar: AppBar(
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: theme.brightness == Brightness.dark
+              ? Brightness.light
+              : Brightness.dark,
+          statusBarBrightness: theme.brightness,
+        ),
         title: const Text('Smart Rules'),
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -63,9 +71,13 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
             final entities = state.entities;
 
             return ListView(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: EdgeInsets.fromLTRB(
+                20,
+                16,
+                20,
+                32 + MediaQuery.of(context).padding.bottom,
+              ),
               children: [
-                const SizedBox(height: 10),
                 _buildAddRuleBanner(context, theme),
                 const SizedBox(height: 32),
                 if (entities.isEmpty)
@@ -406,225 +418,243 @@ class _SmartRulesScreenState extends State<SmartRulesScreen>
             color: Theme.of(context).colorScheme.surface,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(36)),
           ),
-          child: Padding(
-            padding: EdgeInsets.only(
-              bottom: MediaQuery.of(context).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 5,
-                      decoration: BoxDecoration(
+          child: SafeArea(
+            bottom: false, // Handled manually below
+            child: Padding(
+              padding: EdgeInsets.only(
+                bottom:
+                    MediaQuery.of(context).viewInsets.bottom +
+                    MediaQuery.of(context).padding.bottom +
+                    20,
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      initialEntity == null
+                          ? 'Define New Rule'
+                          : 'Edit Smart Rule',
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: -0.5,
+                          ),
+                    ),
+                    const SizedBox(height: 32),
+                    _buildInputField(
+                      context,
+                      controller: nameCtrl,
+                      label: 'Rule Name',
+                      hint: 'e.g. Sister, Google, Amazon',
+                      icon: Icons.bookmark_outline_rounded,
+                    ),
+                    const SizedBox(height: 20),
+                    _buildInputField(
+                      context,
+                      controller: keywordCtrl,
+                      label: 'SMS Keyword',
+                      hint: 'The exact name in the SMS (e.g. NIKITA)',
+                      icon: Icons.search_rounded,
+                      textCapitalization: TextCapitalization.none,
+                    ),
+                    const SizedBox(height: 32),
+                    Text(
+                      'RULE TYPE',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: Theme.of(
                           context,
-                        ).colorScheme.onSurface.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(10),
+                        ).colorScheme.onSurface.withOpacity(0.4),
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    initialEntity == null
-                        ? 'Define New Rule'
-                        : 'Edit Smart Rule',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: -0.5,
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        _buildSelectionChip(
+                          context,
+                          setState,
+                          'Both',
+                          'both',
+                          selectedType,
+                          (v) {
+                            selectedType = v;
+                            final categories = _getCategories(v, allCategories);
+                            if (!categories.contains(selectedCategory)) {
+                              selectedCategory = categories.first;
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        _buildSelectionChip(
+                          context,
+                          setState,
+                          'Income',
+                          'income',
+                          selectedType,
+                          (v) {
+                            selectedType = v;
+                            final categories = _getCategories(v, allCategories);
+                            if (!categories.contains(selectedCategory)) {
+                              selectedCategory = categories.first;
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        _buildSelectionChip(
+                          context,
+                          setState,
+                          'Expense',
+                          'expense',
+                          selectedType,
+                          (v) {
+                            selectedType = v;
+                            final categories = _getCategories(v, allCategories);
+                            if (!categories.contains(selectedCategory)) {
+                              selectedCategory = categories.first;
+                            }
+                          },
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 32),
-                  _buildInputField(
-                    context,
-                    controller: nameCtrl,
-                    label: 'Rule Name',
-                    hint: 'e.g. Sister, Google, Amazon',
-                    icon: Icons.bookmark_outline_rounded,
-                  ),
-                  const SizedBox(height: 20),
-                  _buildInputField(
-                    context,
-                    controller: keywordCtrl,
-                    label: 'SMS Keyword',
-                    hint: 'The exact name in the SMS (e.g. NIKITA)',
-                    icon: Icons.search_rounded,
-                    textCapitalization: TextCapitalization.none,
-                  ),
-                  const SizedBox(height: 32),
-                  Text(
-                    'RULE TYPE',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.onSurface.withOpacity(0.4),
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      _buildSelectionChip(
-                        context,
-                        setState,
-                        'Both',
-                        'both',
-                        selectedType,
-                        (v) {
-                          selectedType = v;
-                          final categories = _getCategories(v, allCategories);
-                          if (!categories.contains(selectedCategory)) {
-                            selectedCategory = categories.first;
-                          }
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      _buildSelectionChip(
-                        context,
-                        setState,
-                        'Income',
-                        'income',
-                        selectedType,
-                        (v) {
-                          selectedType = v;
-                          final categories = _getCategories(v, allCategories);
-                          if (!categories.contains(selectedCategory)) {
-                            selectedCategory = categories.first;
-                          }
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      _buildSelectionChip(
-                        context,
-                        setState,
-                        'Expense',
-                        'expense',
-                        selectedType,
-                        (v) {
-                          selectedType = v;
-                          final categories = _getCategories(v, allCategories);
-                          if (!categories.contains(selectedCategory)) {
-                            selectedCategory = categories.first;
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  DropdownButtonFormField<String>(
-                    value:
-                        selectedCategory ??
-                        (_getCategories(selectedType, allCategories).isNotEmpty
-                            ? _getCategories(selectedType, allCategories).first
-                            : 'Other'),
-                    decoration: InputDecoration(
-                      labelText: 'Assign Category',
-                      prefixIcon: Icon(
-                        Icons.category_outlined,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        borderSide: BorderSide(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withOpacity(0.1),
+                    const SizedBox(height: 24),
+                    DropdownButtonFormField<String>(
+                      value:
+                          selectedCategory ??
+                          (_getCategories(
+                                selectedType,
+                                allCategories,
+                              ).isNotEmpty
+                              ? _getCategories(
+                                  selectedType,
+                                  allCategories,
+                                ).first
+                              : 'Other'),
+                      decoration: InputDecoration(
+                        labelText: 'Assign Category',
+                        prefixIcon: Icon(
+                          Icons.category_outlined,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          borderSide: BorderSide(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.1),
+                          ),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          borderSide: BorderSide(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.1),
+                          ),
                         ),
                       ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        borderSide: BorderSide(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withOpacity(0.1),
-                        ),
-                      ),
-                    ),
-                    items: _getCategories(selectedType, allCategories)
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: (v) {
-                      if (v != null) setState(() => selectedCategory = v);
-                    },
-                  ),
-                  const SizedBox(height: 40),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 64,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        if (nameCtrl.text.isEmpty || keywordCtrl.text.isEmpty) {
-                          return;
-                        }
-                        if (initialEntity != null) {
-                          context.read<RegisteredEntityBloc>().add(
-                            UpdateRegisteredEntity(
-                              RegisteredEntity(
-                                id: initialEntity.id,
-                                name: nameCtrl.text,
-                                keyword: keywordCtrl.text.trim(),
-                                category:
-                                    selectedCategory ??
-                                    (_getCategories(
-                                          selectedType,
-                                          allCategories,
-                                        ).isNotEmpty
-                                        ? _getCategories(
-                                            selectedType,
-                                            allCategories,
-                                          ).first
-                                        : 'Other'),
-                                type: selectedType,
-                              ),
-                            ),
-                          );
-                        } else {
-                          context.read<RegisteredEntityBloc>().add(
-                            AddRegisteredEntity(
-                              RegisteredEntity(
-                                name: nameCtrl.text,
-                                keyword: keywordCtrl.text.trim(),
-                                category:
-                                    selectedCategory ??
-                                    (_getCategories(
-                                          selectedType,
-                                          allCategories,
-                                        ).isNotEmpty
-                                        ? _getCategories(
-                                            selectedType,
-                                            allCategories,
-                                          ).first
-                                        : 'Other'),
-                                type: selectedType,
-                              ),
-                            ),
-                          );
-                        }
-                        Navigator.pop(ctx);
+                      items: _getCategories(selectedType, allCategories)
+                          .map(
+                            (c) => DropdownMenuItem(value: c, child: Text(c)),
+                          )
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) setState(() => selectedCategory = v);
                       },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Theme.of(context).colorScheme.primary,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(24),
+                    ),
+                    const SizedBox(height: 40),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 64,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          if (nameCtrl.text.isEmpty ||
+                              keywordCtrl.text.isEmpty) {
+                            return;
+                          }
+                          if (initialEntity != null) {
+                            context.read<RegisteredEntityBloc>().add(
+                              UpdateRegisteredEntity(
+                                RegisteredEntity(
+                                  id: initialEntity.id,
+                                  name: nameCtrl.text,
+                                  keyword: keywordCtrl.text.trim(),
+                                  category:
+                                      selectedCategory ??
+                                      (_getCategories(
+                                            selectedType,
+                                            allCategories,
+                                          ).isNotEmpty
+                                          ? _getCategories(
+                                              selectedType,
+                                              allCategories,
+                                            ).first
+                                          : 'Other'),
+                                  type: selectedType,
+                                ),
+                              ),
+                            );
+                          } else {
+                            context.read<RegisteredEntityBloc>().add(
+                              AddRegisteredEntity(
+                                RegisteredEntity(
+                                  name: nameCtrl.text,
+                                  keyword: keywordCtrl.text.trim(),
+                                  category:
+                                      selectedCategory ??
+                                      (_getCategories(
+                                            selectedType,
+                                            allCategories,
+                                          ).isNotEmpty
+                                          ? _getCategories(
+                                              selectedType,
+                                              allCategories,
+                                            ).first
+                                          : 'Other'),
+                                  type: selectedType,
+                                ),
+                              ),
+                            );
+                          }
+                          Navigator.pop(ctx);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primary,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(24),
+                          ),
+                          elevation: 0,
                         ),
-                        elevation: 0,
-                      ),
-                      child: const Text(
-                        'Save Smart Rule',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
+                        child: const Text(
+                          'Save Smart Rule',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
