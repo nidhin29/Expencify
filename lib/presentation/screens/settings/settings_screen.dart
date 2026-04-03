@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
 import 'package:expencify/domain/entities/account.dart';
+import 'package:expencify/domain/entities/transaction.dart';
 import 'package:expencify/domain/repositories/account_repository.dart';
 import 'package:expencify/domain/repositories/transaction_repository.dart';
 import 'package:expencify/application/services/auth/auth_service.dart';
@@ -13,7 +14,9 @@ import 'package:expencify/application/services/csv/csv_service.dart';
 import 'package:expencify/application/services/pdf/pdf_service.dart';
 import 'package:expencify/application/services/security/security_service.dart';
 import 'package:expencify/presentation/screens/settings/smart_rules_screen.dart';
+import 'package:expencify/presentation/screens/settings/transaction_selection_screen.dart';
 import 'package:expencify/presentation/screens/auth/splash_screen.dart';
+import 'package:expencify/domain/repositories/category_repository.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_event.dart';
 import 'package:expencify/application/blocs/transaction/transaction_bloc.dart';
@@ -53,9 +56,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _showExportDialog() async {
     final accountRepo = context.read<AccountRepository>();
     final accounts = await accountRepo.getAll();
+    final categoryRepo = context.read<CategoryRepository>();
+    final categories = await categoryRepo.getAll();
 
     Account? selectedAccount;
     DateTimeRange? dateRange;
+    String? selectedType;
+    String? selectedCategory;
 
     if (!mounted) return;
 
@@ -65,61 +72,108 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (context, setState) {
           return AlertDialog(
             title: const Text('Export Transactions'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Choose filters to customize your export structure.',
-                  style: TextStyle(fontSize: 13, color: Colors.grey),
-                ),
-                const SizedBox(height: 20),
-                DropdownButtonFormField<Account?>(
-                  value: selectedAccount,
-                  decoration: const InputDecoration(
-                    labelText: 'Select Wallet / Account',
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(horizontal: 12),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Choose filters to customize your export structure.',
+                    style: TextStyle(fontSize: 13, color: Colors.grey),
                   ),
-                  items: [
-                    const DropdownMenuItem<Account?>(
-                      value: null,
-                      child: Text('All Accounts'),
+                  const SizedBox(height: 20),
+                  DropdownButtonFormField<Account?>(
+                    value: selectedAccount,
+                    decoration: const InputDecoration(
+                      labelText: 'Select Wallet / Account',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
                     ),
-                    ...accounts.map(
-                      (a) => DropdownMenuItem<Account?>(
-                        value: a,
-                        child: Text('${a.name} (${a.bankName})'),
+                    items: [
+                      const DropdownMenuItem<Account?>(
+                        value: null,
+                        child: Text('All Accounts'),
+                      ),
+                      ...accounts.map(
+                        (a) => DropdownMenuItem<Account?>(
+                          value: a,
+                          child: Text('${a.name} (${a.bankName})'),
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) => setState(() => selectedAccount = v),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String?>(
+                    value: selectedType,
+                    decoration: const InputDecoration(
+                      labelText: 'Transaction Type',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: null, child: Text('All Types')),
+                      DropdownMenuItem(
+                        value: 'income',
+                        child: Text('Income Only'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'expense',
+                        child: Text('Expense Only'),
+                      ),
+                    ],
+                    onChanged: (v) => setState(() => selectedType = v),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String?>(
+                    value: selectedCategory,
+                    decoration: const InputDecoration(
+                      labelText: 'Category',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('All Categories'),
+                      ),
+                      ...categories.map(
+                        (c) => DropdownMenuItem(
+                          value: c.name,
+                          child: Text(c.name),
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) => setState(() => selectedCategory = v),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        final picked = await showDateRangePicker(
+                          context: context,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now().add(
+                            const Duration(days: 365),
+                          ),
+                          initialDateRange: dateRange,
+                        );
+                        if (picked != null) {
+                          setState(() => dateRange = picked);
+                        }
+                      },
+                      icon: const Icon(Icons.date_range_rounded),
+                      label: Text(
+                        dateRange == null
+                            ? 'All Time'
+                            : '${DateFormat('MMM d, y').format(dateRange!.start)} - ${DateFormat('MMM d, y').format(dateRange!.end)}',
+                        style: const TextStyle(fontSize: 13),
                       ),
                     ),
-                  ],
-                  onChanged: (v) => setState(() => selectedAccount = v),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      final picked = await showDateRangePicker(
-                        context: context,
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime.now().add(const Duration(days: 365)),
-                        initialDateRange: dateRange,
-                      );
-                      if (picked != null) {
-                        setState(() => dateRange = picked);
-                      }
-                    },
-                    icon: const Icon(Icons.date_range_rounded),
-                    label: Text(
-                      dateRange == null
-                          ? 'All Time'
-                          : '${DateFormat('MMM d, y').format(dateRange!.start)} - ${DateFormat('MMM d, y').format(dateRange!.end)}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             actions: [
               TextButton.icon(
@@ -127,6 +181,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'format': 'csv',
                   'account': selectedAccount,
                   'range': dateRange,
+                  'type': selectedType,
+                  'category': selectedCategory,
                 }),
                 icon: const Icon(
                   Icons.table_chart_rounded,
@@ -139,6 +195,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'format': 'pdf',
                   'account': selectedAccount,
                   'range': dateRange,
+                  'type': selectedType,
+                  'category': selectedCategory,
                 }),
                 icon: const Icon(
                   Icons.picture_as_pdf_rounded,
@@ -161,15 +219,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final format = result['format'] as String;
     final account = result['account'] as Account?;
     final range = result['range'] as DateTimeRange?;
+    final filterType = result['type'] as String?;
+    final filterCategory = result['category'] as String?;
 
     final transactionRepo = context.read<TransactionRepository>();
 
-    final transactions = await transactionRepo.getTransactions(
+    var transactions = await transactionRepo.getTransactions(
       accountId: account?.id,
       from: range?.start,
       to: range?.end,
+      type: filterType,
+      category: filterCategory,
       limit: 10000,
     );
+
+    if (transactions.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No transactions found matching filters.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    // Step 2: Individual Selection
+    if (mounted) {
+      final selected = await Navigator.push<List<TransactionModel>>(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              TransactionSelectionScreen(transactions: transactions),
+        ),
+      );
+      if (selected == null || selected.isEmpty) return;
+      transactions = selected;
+    }
 
     String? path;
 
@@ -177,11 +263,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       path = await CSVService().exportTransactionsToCSV(
         transactions,
         accounts: accounts,
+        filterType: filterType,
+        filterCategory: filterCategory,
+        from: range?.start,
+        to: range?.end,
       );
     } else {
       path = await PdfService().exportTransactionsToPDF(
         transactions,
         accounts: accounts,
+        filterType: filterType,
+        filterCategory: filterCategory,
+        from: range?.start,
+        to: range?.end,
       );
     }
 

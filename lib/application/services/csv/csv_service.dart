@@ -9,6 +9,10 @@ class CSVService {
   Future<String?> exportTransactionsToCSV(
     List<TransactionModel> transactions, {
     List<Account>? accounts,
+    String? filterType,
+    String? filterCategory,
+    DateTime? from,
+    DateTime? to,
   }) async {
     // Build account lookup map
     final accountMap = <int, String>{};
@@ -19,9 +23,31 @@ class CSVService {
     }
 
     final dateFmt = DateFormat('d MMM yyyy HH:mm');
+    final rowDateFmt = DateFormat('d MMM yyyy');
     List<List<dynamic>> rows = [];
 
-    // Header
+    // Metadata
+    rows.add(['Expencify - Transaction Export']);
+    rows.add(['Generated On:', dateFmt.format(DateTime.now())]);
+
+    if (from != null && to != null) {
+      rows.add([
+        'Period:',
+        '${rowDateFmt.format(from)} to ${rowDateFmt.format(to)}',
+      ]);
+    }
+
+    if (filterType != null || filterCategory != null) {
+      String filterStr = '';
+      if (filterType != null)
+        filterStr += 'Type: ${filterType.toUpperCase()}; ';
+      if (filterCategory != null) filterStr += 'Category: $filterCategory';
+      rows.add(['Filters Applied:', filterStr]);
+    }
+
+    rows.add([]); // Empty row separator
+
+    // Table Header
     rows.add([
       'Date',
       'Account',

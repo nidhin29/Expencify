@@ -11,6 +11,10 @@ class PdfService {
   Future<String?> exportTransactionsToPDF(
     List<TransactionModel> transactions, {
     List<Account>? accounts,
+    String? filterType,
+    String? filterCategory,
+    DateTime? from,
+    DateTime? to,
   }) async {
     // Build account lookup
     final accountMap = <int, String>{};
@@ -50,29 +54,67 @@ class PdfService {
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(32),
-        header: (ctx) => pw.Container(
-          decoration: pw.BoxDecoration(
-            color: headerBg,
-            borderRadius: pw.BorderRadius.circular(8),
-          ),
-          padding: const pw.EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          child: pw.Row(
-            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-            children: [
-              pw.Text(
-                'Expencify — Transaction Report',
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
+        header: (ctx) => pw.Column(
+          children: [
+            pw.Container(
+              decoration: pw.BoxDecoration(
+                color: headerBg,
+                borderRadius: pw.BorderRadius.circular(8),
+              ),
+              padding: const pw.EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: 14,
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text(
+                    'Expencify — Transaction Report',
+                    style: pw.TextStyle(
+                      color: PdfColors.white,
+                      fontSize: 16,
+                      fontWeight: pw.FontWeight.bold,
+                    ),
+                  ),
+                  pw.Text(
+                    DateFormat('d MMM yyyy').format(DateTime.now()),
+                    style: const pw.TextStyle(color: PdfColors.white),
+                  ),
+                ],
+              ),
+            ),
+            if (filterType != null || filterCategory != null || from != null)
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 10, left: 4, right: 4),
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Row(
+                      children: [
+                        if (filterType != null) ...[
+                          _filterBadge(
+                            'Type: ${filterType.toUpperCase()}',
+                            headerBg,
+                          ),
+                          pw.SizedBox(width: 8),
+                        ],
+                        if (filterCategory != null)
+                          _filterBadge('Category: $filterCategory', headerBg),
+                      ],
+                    ),
+                    if (from != null && to != null)
+                      pw.Text(
+                        'Period: ${dateFmt.format(from)} - ${dateFmt.format(to)}',
+                        style: const pw.TextStyle(
+                          fontSize: 10,
+                          color: PdfColors.grey700,
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              pw.Text(
-                DateFormat('d MMM yyyy').format(DateTime.now()),
-                style: const pw.TextStyle(color: PdfColors.white),
-              ),
-            ],
-          ),
+            pw.SizedBox(height: 10),
+          ],
         ),
         build: (ctx) => [
           pw.SizedBox(height: 16),
@@ -201,6 +243,25 @@ class PdfService {
         '${dir.path}/expencify_${DateTime.now().millisecondsSinceEpoch}.pdf';
     await File(path).writeAsBytes(await doc.save());
     return path;
+  }
+
+  pw.Widget _filterBadge(String text, PdfColor color) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.white,
+        borderRadius: pw.BorderRadius.circular(4),
+        border: pw.Border.all(color: color, width: 0.5),
+      ),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: pw.FontWeight.bold,
+          color: color,
+        ),
+      ),
+    );
   }
 
   pw.Widget _summaryCard(String label, String value, PdfColor color) {
