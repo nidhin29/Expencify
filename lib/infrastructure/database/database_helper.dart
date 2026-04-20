@@ -19,7 +19,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'expencify.db');
     return await openDatabase(
       path,
-      version: 12,
+      version: 13,
       onConfigure: (db) async {
         await db.rawQuery('PRAGMA journal_mode=WAL');
       },
@@ -139,6 +139,21 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         body TEXT,
         timestamp INTEGER
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE subscriptions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        amount REAL,
+        merchant TEXT,
+        start_date TEXT,
+        next_due_date TEXT,
+        frequency TEXT DEFAULT 'monthly',
+        is_active INTEGER DEFAULT 1,
+        account_id INTEGER,
+        FOREIGN KEY (account_id) REFERENCES accounts (id)
       )
     ''');
 
@@ -275,6 +290,24 @@ class DatabaseHelper {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             body TEXT,
             timestamp INTEGER
+          )
+        ''');
+      } catch (_) {}
+    }
+    if (oldVersion < 13) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS subscriptions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            amount REAL,
+            merchant TEXT,
+            start_date TEXT,
+            next_due_date TEXT,
+            frequency TEXT DEFAULT 'monthly',
+            is_active INTEGER DEFAULT 1,
+            account_id INTEGER,
+            FOREIGN KEY (account_id) REFERENCES accounts (id)
           )
         ''');
       } catch (_) {}

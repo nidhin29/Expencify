@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:expencify/application/services/ai/ai_service.dart';
 import 'package:expencify/application/services/ai/local_ai_model.dart';
+import 'package:expencify/presentation/screens/setup/setup_required_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -17,10 +18,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool _isInit = false;
   bool _isThinking = false;
-  double _downloadProgress = 0;
-  bool _isDownloading = false;
   bool _isChecking = true;
-  LocalAIModelMetadata? _selectedModel;
 
   @override
   void initState() {
@@ -56,44 +54,15 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     } else {
-      // Automatic download of default model (Qwen Lite)
-      final defaultModel = LocalAIModelMetadata.all.firstWhere(
-        (m) => m.id == LocalAIModelType.qwenLite,
-      );
       if (mounted) {
         setState(() {
+          _isInit = false;
           _isChecking = false;
         });
-        await _download(defaultModel);
       }
     }
   }
 
-  Future<void> _download(LocalAIModelMetadata metadata) async {
-    if (!mounted) return;
-    setState(() {
-      _isDownloading = true;
-      _downloadProgress = 0;
-      _selectedModel = metadata;
-    });
-    try {
-      await _ai.downloadModel(
-        metadata,
-        (p) => setState(() => _downloadProgress = p),
-      );
-      await _checkStatus();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isDownloading = false);
-      }
-    }
-  }
 
   void _sendMessage() async {
     final text = _controller.text.trim();
@@ -185,20 +154,66 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
-    if (_isDownloading) {
-      return _buildDownloadProgress(theme);
-    }
-
     if (!_isInit) {
       return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.red),
-            const SizedBox(height: 16),
-            const Text('Failed to initialize AI.'),
-            TextButton(onPressed: _checkStatus, child: const Text('Retry')),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.psychology_outlined,
+                size: 64,
+                color: theme.colorScheme.primary.withOpacity(0.5),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'AI Model Offline',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'The AI model is missing or incomplete. You must complete the setup to use Chat.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withOpacity(0.6),
+                ),
+              ),
+              const SizedBox(height: 32),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(
+                      builder: (_) => SetupRequiredScreen(
+                        onComplete: (ctx) {
+                          Navigator.of(ctx).pushReplacement(
+                            MaterialPageRoute(
+                              builder: (_) => const ChatScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.settings_suggest_rounded),
+                label: const Text('Go to Setup'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: theme.colorScheme.primary,
+                  foregroundColor: theme.colorScheme.onPrimary,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 16,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -253,92 +268,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildDownloadProgress(ThemeData theme) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(32),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withOpacity(0.05),
-                shape: BoxShape.circle,
-              ),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  SizedBox(
-                    width: 100,
-                    height: 100,
-                    child: CircularProgressIndicator(
-                      value: _downloadProgress,
-                      strokeWidth: 8,
-                      backgroundColor: theme.colorScheme.primary.withOpacity(
-                        0.1,
-                      ),
-                      strokeCap: StrokeCap.round,
-                    ),
-                  ),
-                  Icon(
-                    Icons.cloud_download_rounded,
-                    size: 40,
-                    color: theme.colorScheme.primary,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 40),
-            Text(
-              'Preparing your Intelligence',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w900,
-                letterSpacing: -0.5,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Downloading ${_selectedModel?.name ?? "AI Model"}',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.6),
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 32),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '${(_downloadProgress * 100).toStringAsFixed(1)}%',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w900,
-                      color: theme.colorScheme.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Container(width: 1, height: 16, color: theme.dividerColor),
-                  const SizedBox(width: 12),
-                  Text(
-                    'Size: ${_selectedModel?.size ?? "Unknown"}',
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildChatBubble(
     String text,

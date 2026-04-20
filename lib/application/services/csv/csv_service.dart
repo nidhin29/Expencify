@@ -39,9 +39,12 @@ class CSVService {
 
     if (filterType != null || filterCategory != null) {
       String filterStr = '';
-      if (filterType != null)
+      if (filterType != null) {
         filterStr += 'Type: ${filterType.toUpperCase()}; ';
-      if (filterCategory != null) filterStr += 'Category: $filterCategory';
+      }
+      if (filterCategory != null) {
+        filterStr += 'Category: $filterCategory';
+      }
       rows.add(['Filters Applied:', filterStr]);
     }
 

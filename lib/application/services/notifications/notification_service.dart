@@ -117,7 +117,69 @@ class NotificationService {
       debugPrint('NotificationService: reminders channel failed: $e');
     }
 
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(
+            const AndroidNotificationChannel(
+              'subscriptions',
+              'Subscription Alerts',
+              description: 'Upcoming renewal reminders',
+              importance: Importance.max,
+              playSound: true,
+              enableVibration: true,
+            ),
+          );
+    } catch (e) {
+      debugPrint('NotificationService: subscriptions channel failed: $e');
+    }
+
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(
+            const AndroidNotificationChannel(
+              'budgets',
+              'Budget Alerts',
+              description: 'Alerts for budget limits (50%, 80%, 100%)',
+              importance: Importance.max,
+              playSound: true,
+              enableVibration: true,
+            ),
+          );
+    } catch (e) {
+      debugPrint('NotificationService: budgets channel failed: $e');
+    }
+
     _initialized = true;
+  }
+
+  /// Shows an immediate notification on the specified channel.
+  Future<void> showNotification({
+    required int id,
+    required String channelId,
+    required String title,
+    required String body,
+    String? payload,
+    Color? color,
+  }) async {
+    await init();
+    
+    final androidDetails = AndroidNotificationDetails(
+      channelId,
+      channelId == 'budgets' ? 'Budget Alerts' : (channelId == 'subscriptions' ? 'Subscription Alerts' : 'General Alerts'),
+      importance: Importance.max,
+      priority: Priority.high,
+      color: color,
+    );
+    
+    final details = NotificationDetails(android: androidDetails);
+    
+    await _plugin.show(id, title, body, details, payload: payload);
   }
 
   Future<void> scheduleReminder({
@@ -247,5 +309,56 @@ class NotificationService {
   Future<void> cancelApplianceAMC(int id) async {
     await init();
     await _plugin.cancel(1000 + id);
+  }
+
+  Future<void> scheduleSubscriptionReminder({
+    required int id,
+    required String name,
+    required double amount,
+    required DateTime nextDueDate,
+  }) async {
+    await init();
+    // Notify 2 days before due
+    final notify = nextDueDate.subtract(const Duration(days: 2));
+    if (notify.isBefore(DateTime.now())) return;
+
+    const AndroidNotificationDetails androidDetails =
+        AndroidNotificationDetails(
+          'subscriptions',
+          'Subscription Alerts',
+          channelDescription: 'Upcoming renewal reminders',
+          importance: Importance.high,
+          priority: Priority.high,
+          color: Color(0xFFEC4899),
+          styleInformation: BigTextStyleInformation(
+            '',
+            contentTitle: '🔄 Renewal Insight',
+          ),
+        );
+    const NotificationDetails details = NotificationDetails(
+      android: androidDetails,
+    );
+
+    try {
+      await _plugin.zonedSchedule(
+        2000 + id, // Unique offset for subscriptions
+        '🔄 Renewal Soon: $name',
+        'Your subscription for $name (₹${amount.toStringAsFixed(0)}) will renew in 2 days.',
+        tz.TZDateTime.from(notify, tz.local),
+        details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'subscriptions',
+      );
+      debugPrint('🔔 Subscription reminder scheduled for $notify (ID: ${2000 + id})');
+    } catch (e) {
+      debugPrint('🔔 NotificationService scheduleSubscriptionReminder FAILED: $e');
+    }
+  }
+
+  Future<void> cancelSubscriptionReminder(int id) async {
+    await init();
+    await _plugin.cancel(2000 + id);
   }
 }

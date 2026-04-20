@@ -4,7 +4,6 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_windows
-  flutter_gemma
   local_auth_windows
   permission_handler_windows
   printing

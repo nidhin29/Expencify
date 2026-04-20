@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_gemma/flutter_gemma.dart' hide CancelToken;
 import 'package:path_provider/path_provider.dart';
 import 'package:expencify/infrastructure/database/database_helper.dart';
 import 'package:intl/intl.dart';
@@ -127,6 +127,12 @@ class AIService {
   InferenceModel? _activeModel;
   bool _isAiBusy = false;
   Future<void>? _initFuture;
+  CancelToken? _downloadCancelToken;
+
+  void pauseDownload() {
+    _downloadCancelToken?.cancel('User paused');
+    _downloadCancelToken = null;
+  }
 
   Future<void> init([LocalAIModelType? type]) async {
     if (_initFuture != null) return _initFuture;
@@ -144,10 +150,10 @@ class AIService {
     if (_initialized && (_currentModel?.id == type || type == null)) return;
 
     // Manual registration workaround for Desktop platforms
-    if (!kIsWeb &&
+    /* if (!kIsWeb &&
         (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       FlutterGemmaDesktop.registerWith();
-    }
+    } */
 
     await FlutterGemma.initialize();
 
@@ -260,9 +266,6 @@ class AIService {
 
   Future<bool> modelExists(LocalAIModelType type) async {
     final metadata = LocalAIModelMetadata.all.firstWhere((m) => m.id == type);
-    debugPrint(
-      'AI: Checking existence for ${metadata.fileName} (ID: ${type.name})',
-    );
 
     // 1. Check Play Asset Delivery (Android)
     if (!kIsWeb && Platform.isAndroid) {
@@ -271,27 +274,32 @@ class AIService {
           'getAssetPackPath',
           {'packName': 'model_pack'},
         );
-        debugPrint('AI: PAD Pack Path: $packPath');
         if (packPath != null) {
           final fullPath = '$packPath/${metadata.fileName}';
-          if (await File(fullPath).exists()) {
-            debugPrint('AI: Found in PAD: $fullPath');
-            return true;
+          final file = File(fullPath);
+          if (await file.exists()) {
+            final size = await file.length();
+            if (size >= metadata.minSize) {
+              return true;
+            }
           }
         }
       } catch (e) {
         debugPrint('AI: modelExists PAD check failed: $e');
       }
-
-
     }
 
     // 2. Check Local Documents
     final directory = await getApplicationDocumentsDirectory();
     final localPath = '${directory.path}/${metadata.fileName}';
-    final exists = await File(localPath).exists();
-    debugPrint('AI: Checked local path: $localPath | exists: $exists');
-    return exists;
+    final file = File(localPath);
+    if (await file.exists()) {
+      final size = await file.length();
+      final isValid = size >= metadata.minSize;
+      debugPrint('AI: Checked local path: $localPath | size: $size | valid: $isValid');
+      return isValid;
+    }
+    return false;
   }
 
   Future<void> downloadModel(
@@ -301,36 +309,69 @@ class AIService {
     final directory = await getApplicationDocumentsDirectory();
     final modelPath = '${directory.path}/${metadata.fileName}';
     final tempPath = '$modelPath.tmp';
+    final tempFile = File(tempPath);
+
+    int existingBytes = 0;
+    if (await tempFile.exists()) {
+      existingBytes = await tempFile.length();
+    }
+
+    _downloadCancelToken = CancelToken();
 
     try {
-    await Dio().download(
-      metadata.url,
-        tempPath,
-      onReceiveProgress: (count, total) {
-        if (total != -1) {
-          onProgress(count / total);
-        }
-      },
-    );
+      final response = await Dio().get<ResponseBody>(
+        metadata.url,
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: existingBytes > 0 ? {'range': 'bytes=$existingBytes-'} : null,
+          followRedirects: true,
+          validateStatus: (status) => status != null && status < 400,
+        ),
+        cancelToken: _downloadCancelToken,
+      );
 
-      // Rename to final path ONLY after full download completes successfully
-      final tempFile = File(tempPath);
-      if (await tempFile.exists()) {
+      // Total size of the model. 
+      // If we are resuming, Content-Length is the REMAINING size.
+      // We use the metadata size for a stable progress denominator.
+      
+      final file = await tempFile.open(mode: FileMode.append);
+      int downloaded = 0;
+
+      await for (final chunk in response.data!.stream) {
+        await file.writeFrom(chunk);
+        downloaded += chunk.length;
+        
+        // Progress based on total expected size from metadata
+        double progress = (existingBytes + downloaded) / metadata.minSize;
+        if (progress > 1.0) progress = 1.0;
+        onProgress(progress);
+      }
+
+      await file.close();
+
+      // Verification: Check if file size is sufficient
+      final finalSize = await tempFile.length();
+      if (finalSize >= metadata.minSize) {
         await tempFile.rename(modelPath);
-        debugPrint('AI: Model download and rename complete.');
+        debugPrint('AI: Model download and rename complete. Final size: $finalSize');
+      } else {
+        debugPrint('AI: Download ended but file too small ($finalSize).');
+        // Don't delete, let user resume next time
       }
     } catch (e) {
-      debugPrint('AI Download Error: $e');
-      // Cleanup temp file on failure
-      try {
-        final tempFile = File(tempPath);
-        if (await tempFile.exists()) {
-          await tempFile.delete();
-        }
-      } catch (_) {}
-      rethrow;
+      if (e is DioException && CancelToken.isCancel(e)) {
+        debugPrint('AI: Download paused by user.');
+      } else {
+        debugPrint('AI Download Error: $e');
+        rethrow;
+      }
+    } finally {
+      _downloadCancelToken = null;
     }
-    await init(metadata.id);
+
+    if (await modelExists(metadata.id)) {
+      await init(metadata.id);
+    }
   }
 
   Future<void> clearSession() async {

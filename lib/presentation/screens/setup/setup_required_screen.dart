@@ -17,6 +17,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
   bool _isBatteryOptimizationIgnored = false;
   bool _isAiModelInstalled = false;
   bool _isDownloading = false;
+  bool _isPaused = false;
   double _downloadProgress = 0;
 
   final _aiService = AIService();
@@ -66,9 +67,20 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
   }
 
   Future<void> _downloadAi() async {
+    if (_isDownloading) {
+      _aiService.pauseDownload();
+      if (mounted) {
+        setState(() {
+          _isDownloading = false;
+          _isPaused = true;
+        });
+      }
+      return;
+    }
+
     setState(() {
       _isDownloading = true;
-      _downloadProgress = 0;
+      _isPaused = false;
     });
 
     try {
@@ -81,6 +93,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
       _checkRequirements();
     } catch (e) {
       if (mounted) {
+        setState(() => _isPaused = true);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
@@ -160,8 +173,10 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                 isDone: _isAiModelInstalled,
                 isProcessing: _isDownloading,
                 progress: _downloadProgress,
-                onTap: _isDownloading ? null : _downloadAi,
-                actionLabel: _isDownloading ? 'Initializing...' : 'Initialize',
+                onTap: _downloadAi,
+                actionLabel: _isDownloading 
+                    ? 'Pause' 
+                    : (_isPaused ? 'Resume' : 'Initialize'),
               ),
               const SizedBox(height: 48),
               if (_hasSmsPermission &&
@@ -295,7 +310,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
             ),
             if (!isDone) ...[
               const SizedBox(height: 20),
-              if (isProcessing) ...[
+              if (isProcessing || (actionLabel == 'Resume')) ...[
                 ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: LinearProgressIndicator(
@@ -305,11 +320,35 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  '${(progress * 100).toStringAsFixed(0)}%',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${(progress * 100).toStringAsFixed(0)}%',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: onTap,
+                      icon: Icon(
+                        isProcessing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                        color: cs.primary,
+                        size: 20,
+                      ),
+                      label: Text(
+                        isProcessing ? 'Pause' : 'Resume',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: cs.primary,
+                        ),
+                      ),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
                 ),
               ] else
                 SizedBox(

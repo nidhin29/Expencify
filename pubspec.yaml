@@ -64,6 +64,13 @@ dependencies:
   shimmer: ^3.0.0
   flutter_foreground_task: ^9.2.1
   upgrader: ^12.5.0
+  file_picker: ^8.1.4
+  google_sign_in: ^6.2.1
+  googleapis: ^13.2.0
+  googleapis_auth: ^1.6.0
+  encrypt: ^5.0.3
+  clock: ^1.1.1
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:

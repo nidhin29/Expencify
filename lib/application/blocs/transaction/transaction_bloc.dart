@@ -7,15 +7,23 @@ import 'transaction_event.dart';
 import 'transaction_state.dart';
 import '../../../domain/entities/transaction.dart';
 
+import '../../services/notifications/budget_alert_service.dart';
+
 class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
   final TransactionRepository _repository;
   final AccountRepository _accountRepo;
   final AccountBloc _accountBloc;
+  final BudgetAlertService? _budgetAlerts;
 
   LoadTransactions? _lastFilter;
 
-  TransactionBloc(this._repository, this._accountRepo, this._accountBloc)
-    : super(TransactionInitial()) {
+  TransactionBloc(
+    this._repository,
+    this._accountRepo,
+    this._accountBloc, {
+    BudgetAlertService? budgetAlerts,
+  }) : _budgetAlerts = budgetAlerts,
+       super(TransactionInitial()) {
     on<LoadTransactions>(_onLoadTransactions);
     on<AddTransaction>(_onAddTransaction);
     on<UpdateTransaction>(_onUpdateTransaction);
@@ -104,6 +112,9 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       } else {
         add(const LoadTransactions(silent: true));
       }
+
+      // Check for budget alerts
+      _budgetAlerts?.checkBudgets();
     } catch (e) {
       emit(TransactionError(e.toString()));
     }
@@ -210,6 +221,9 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       } else {
         add(const LoadTransactions(silent: true));
       }
+
+      // Check for budget alerts
+      _budgetAlerts?.checkBudgets();
     } catch (e) {
       emit(TransactionError(e.toString()));
     }
@@ -242,6 +256,9 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       } else {
         add(const LoadTransactions(silent: true));
       }
+
+      // Check for budget alerts
+      _budgetAlerts?.checkBudgets();
     } catch (e) {
       emit(TransactionError(e.toString()));
     }

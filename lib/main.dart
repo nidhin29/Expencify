@@ -9,6 +9,7 @@ import 'infrastructure/repositories/sqlite_reminder_repository.dart';
 import 'infrastructure/repositories/sqlite_category_repository.dart';
 import 'infrastructure/repositories/sqlite_appliance_repository.dart';
 import 'infrastructure/repositories/sqlite_registered_entity_repository.dart';
+import 'infrastructure/repositories/sqlite_subscription_repository.dart';
 import 'domain/repositories/account_repository.dart';
 import 'domain/repositories/transaction_repository.dart';
 import 'domain/repositories/budget_repository.dart';
@@ -17,6 +18,7 @@ import 'domain/repositories/reminder_repository.dart';
 import 'domain/repositories/category_repository.dart';
 import 'domain/repositories/appliance_repository.dart';
 import 'domain/repositories/registered_entity_repository.dart';
+import 'domain/repositories/subscription_repository.dart';
 import 'application/blocs/account/account_bloc.dart';
 import 'application/blocs/account/account_event.dart';
 import 'application/blocs/transaction/transaction_bloc.dart';
@@ -27,6 +29,8 @@ import 'application/blocs/category/category_bloc.dart';
 import 'application/blocs/appliance/appliance_bloc.dart';
 import 'application/blocs/registered_entity/registered_entity_bloc.dart';
 import 'application/blocs/registered_entity/registered_entity_event.dart';
+import 'application/blocs/subscription/subscription_bloc.dart';
+import 'application/blocs/subscription/subscription_event.dart';
 import 'presentation/theme/app_theme.dart';
 // Screens are now routed via SplashScreen
 import 'presentation/screens/security/lock_screen.dart';
@@ -34,6 +38,7 @@ import 'application/services/auth/auth_service.dart';
 import 'application/services/notifications/notification_service.dart';
 import 'application/services/sms/sms_monitor_service.dart';
 import 'application/services/security/security_service.dart';
+import 'application/services/notifications/budget_alert_service.dart';
 import 'presentation/screens/auth/splash_screen.dart';
 import 'presentation/screens/home/home_screen.dart' show homeRouteObserver;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -75,6 +80,7 @@ void main() async {
   final categoryRepo = SqliteCategoryRepository(dbHelper);
   final applianceRepo = SqliteApplianceRepository(dbHelper);
   final registeredRepo = SqliteRegisteredEntityRepository();
+  final subscriptionRepo = SqliteSubscriptionRepository(dbHelper);
 
   runApp(
     WithForegroundTask(
@@ -96,6 +102,9 @@ void main() async {
           ),
           RepositoryProvider.value(value: NotificationService()),
           RepositoryProvider<ApplianceRepository>.value(value: applianceRepo),
+          RepositoryProvider<SubscriptionRepository>.value(
+            value: subscriptionRepo,
+          ),
         ],
         child: MultiBlocProvider(
           providers: [
@@ -103,11 +112,19 @@ void main() async {
               create: (_) => AccountBloc(accountRepo)..add(LoadAccounts()),
             ),
             BlocProvider(
-              create: (ctx) => TransactionBloc(
-                transactionRepo,
-                accountRepo,
-                ctx.read<AccountBloc>(),
-              ),
+              create: (ctx) {
+                final budgetAlerts = BudgetAlertService(
+                  transactionRepo,
+                  budgetRepo,
+                  ctx.read<NotificationService>(),
+                );
+                return TransactionBloc(
+                  transactionRepo,
+                  accountRepo,
+                  ctx.read<AccountBloc>(),
+                  budgetAlerts: budgetAlerts,
+                );
+              },
             ),
             BlocProvider(create: (_) => BudgetBloc(budgetRepo)),
             BlocProvider(create: (_) => GoalBloc(goalRepo)),
@@ -123,6 +140,12 @@ void main() async {
               create: (_) =>
                   RegisteredEntityBloc(registeredRepo)
                     ..add(LoadRegisteredEntities()),
+            ),
+            BlocProvider(
+              create: (context) => SubscriptionBloc(
+                subscriptionRepo,
+                context.read<NotificationService>(),
+              )..add(LoadSubscriptions()),
             ),
           ],
           child: ExpencifyApp(initialScreen: initialScreen),

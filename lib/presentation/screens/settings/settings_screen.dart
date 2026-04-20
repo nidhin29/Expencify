@@ -21,6 +21,8 @@ import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_event.dart';
 import 'package:expencify/application/blocs/transaction/transaction_bloc.dart';
 import 'package:expencify/application/blocs/transaction/transaction_event.dart';
+import 'package:expencify/application/services/backup/backup_service.dart';
+import 'package:expencify/application/services/backup/google_drive_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -55,8 +57,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _showExportDialog() async {
     final accountRepo = context.read<AccountRepository>();
-    final accounts = await accountRepo.getAll();
     final categoryRepo = context.read<CategoryRepository>();
+    
+    final accounts = await accountRepo.getAll();
     final categories = await categoryRepo.getAll();
 
     Account? selectedAccount;
@@ -340,6 +343,164 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _handleBackup() async {
+    final success = await BackupService().exportBackup();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            success ? 'Backup created and shared!' : 'Backup failed.',
+          ),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleRestore() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore Data?'),
+        content: const Text(
+          'This will overwrite all your current transactions, accounts, and settings with the data from the backup file. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'RESTORE',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    final success = await BackupService().importBackup();
+    if (mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Data restored successfully! Restarting...'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        // Force app reload
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const SplashScreen()),
+          (route) => false,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Restore failed or cancelled.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleCloudBackup() async {
+    final pin = await _security.getPin();
+    if (!mounted) return;
+    
+    if (pin == null || pin.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Please enable App Lock and set a PIN first to encrypt your backup.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Starting Cloud Backup...')),
+    );
+
+    final success = await GoogleDriveService().backupDatabase(pin);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            success ? 'Cloud backup successful!' : 'Cloud backup failed.',
+          ),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleCloudRestore() async {
+    final pin = await _security.getPin();
+    if (!mounted) return;
+
+    if (pin == null || pin.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter your PIN to decrypt the cloud backup.'),
+        ),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore from Cloud?'),
+        content: const Text(
+          'This will replace your local data with the backup from Google Drive. Your current data will be lost.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('RESTORE', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    final success = await GoogleDriveService().restoreDatabase(pin);
+
+    if (mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Data restored successfully! Restarting...'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const SplashScreen()),
+          (route) => false,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Restore failed. Check your connection and PIN.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _handlePinChange({bool forceEnable = false}) async {
     final formKey = GlobalKey<FormState>();
     final pinCtrl = TextEditingController();
@@ -447,6 +608,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _handleWipeData,
               color: Colors.orange,
               subtitle: 'Clears transactions & accounts',
+            ),
+          ]),
+          const SizedBox(height: 24),
+          _buildGroup(theme, 'Backup & Restore', [
+            _buildTile(
+              theme,
+              Icons.cloud_upload_rounded,
+              'Create Full Backup',
+              _handleBackup,
+              subtitle: 'Export data to transfer to another phone',
+            ),
+            _buildTile(
+              theme,
+              Icons.cloud_download_rounded,
+              'Restore from Backup',
+              _handleRestore,
+              subtitle: 'Import data from an existing backup file',
+            ),
+          ]),
+          const SizedBox(height: 24),
+          _buildGroup(theme, 'Google Cloud Sync', [
+            _buildTile(
+              theme,
+              Icons.backup_rounded,
+              'Backup to Google Drive',
+              _handleCloudBackup,
+              subtitle: 'Encrypted backup to your Google account',
+            ),
+            _buildTile(
+              theme,
+              Icons.settings_backup_restore_rounded,
+              'Restore from Google Drive',
+              _handleCloudRestore,
+              subtitle: 'Download and decrypt cloud backup',
             ),
           ]),
           const SizedBox(height: 24),

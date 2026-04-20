@@ -20,6 +20,7 @@ import 'package:expencify/presentation/screens/reminders/reminders_screen.dart';
 import 'package:expencify/presentation/screens/categories/categories_screen.dart';
 import 'package:expencify/presentation/screens/appliances/appliances_screen.dart';
 import 'package:expencify/presentation/screens/chat/chat_screen.dart';
+import 'package:expencify/presentation/screens/subscriptions/subscriptions_screen.dart';
 import 'package:expencify/application/blocs/reminder/reminder_bloc.dart';
 import 'package:expencify/application/blocs/reminder/reminder_state.dart';
 import 'package:expencify/application/blocs/reminder/reminder_event.dart';
@@ -1424,6 +1425,20 @@ class _HomeScreenState extends State<HomeScreen>
                           context,
                           MaterialPageRoute(
                             builder: (_) => const AppliancesScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    _buildMoreItem(
+                      ctx,
+                      Icons.autorenew_rounded,
+                      'Subscriptions',
+                      () {
+                        Navigator.pop(ctx);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const SubscriptionsScreen(),
                           ),
                         );
                       },
