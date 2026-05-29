@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
@@ -11,13 +11,16 @@ import 'package:expencify/application/blocs/transaction/transaction_event.dart';
 import 'package:expencify/application/blocs/transaction/transaction_state.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
+
+
 import 'package:expencify/presentation/screens/transactions/receipt_fullscreen.dart';
 import 'package:expencify/presentation/screens/transactions/transaction_entry_screen.dart';
 import 'package:expencify/presentation/screens/transactions/split_expense_sheet.dart';
 
 class TransactionListScreen extends StatefulWidget {
   final VoidCallback? onRefresh;
-  const TransactionListScreen({super.key, this.onRefresh});
+  final bool isActive;
+  const TransactionListScreen({super.key, this.onRefresh, this.isActive = false});
 
   @override
   State<TransactionListScreen> createState() => _TransactionListScreenState();
@@ -39,7 +42,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
 
   // Optimistic-deletion: track items removed but not yet committed (undo window)
   final Set<int> _removedIds = {};
-
+  
   @override
   void initState() {
     super.initState();

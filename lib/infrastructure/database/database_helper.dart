@@ -515,4 +515,11 @@ class DatabaseHelper {
     final db = await database;
     await db.transaction(action);
   }
+
+  Future<void> closeDatabase() async {
+    if (_database != null) {
+      await _database!.close();
+      _database = null;
+    }
+  }
 }

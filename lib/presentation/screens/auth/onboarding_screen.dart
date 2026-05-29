@@ -20,27 +20,33 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   final List<OnboardingData> _pages = [
     OnboardingData(
-      title: 'Track Your Expenses',
+      title: 'Welcome to Expencify',
       description:
-          'Easily manage and categorize your daily expenses and income.',
-      icon: Icons.account_balance_wallet_rounded,
+          'Your privacy-first, offline-first smart finance manager. All your data stays on your device and is never shared with third-party servers.',
+      icon: Icons.shield_rounded,
     ),
     OnboardingData(
-      title: 'Smart OCR Scanning',
+      title: 'Smart Expense Logging',
       description:
-          'Scan receipts and bills automatically using advanced text recognition.',
-      icon: Icons.camera_rounded,
+          'Tap the \'+\' button on the home screen to log an expense. Short on time? Use the Camera icon to scan a physical receipt, and our on-device AI will automatically extract the amount and category!',
+      icon: Icons.document_scanner_rounded,
     ),
     OnboardingData(
-      title: 'Detailed Insights',
+      title: 'Automate with SMS',
       description:
-          'Visualize your spending habits with intuitive charts and reports.',
-      icon: Icons.analytics_rounded,
+          'Tired of manual entry? Expencify can securely read bank transaction SMS alerts and log them automatically. \n\nIMPORTANT: You must add your Bank Account in the Accounts tab (and ensure the Bank Name matches your SMS) for the AI to recognize and track your messages!',
+      icon: Icons.sms_rounded,
     ),
     OnboardingData(
-      title: 'Get Started',
+      title: 'Security & Cloud Sync',
       description:
-          'Create your account to begin managing your finances securely.',
+          'Keep prying eyes away by enabling App Lock. Want to switch phones safely? Backup your data directly to your own Google Drive using Military-Grade AES-256 End-to-End Encryption.',
+      icon: Icons.cloud_sync_rounded,
+    ),
+    OnboardingData(
+      title: 'Ready to Start?',
+      description:
+          'Let\'s set up your first account and take full control of your financial health.',
       icon: Icons.rocket_launch_rounded,
       isLastPage: true,
     ),
@@ -85,6 +91,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            // Skip Button Row
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (_currentPage != _pages.length - 1)
+                    TextButton(
+                      onPressed: _goToHome,
+                      child: Text(
+                        'Skip',
+                        style: TextStyle(
+                          color: theme.colorScheme.onBackground.withOpacity(0.6),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
             Expanded(
               child: PageView.builder(
                 controller: _pageController,

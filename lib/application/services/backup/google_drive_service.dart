@@ -1,11 +1,12 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:flutter/foundation.dart';
 import '../security/encryption_service.dart';
+import 'package:expencify/infrastructure/database/database_helper.dart';
 
 class GoogleDriveService {
   static final GoogleDriveService _instance = GoogleDriveService._();
@@ -20,13 +21,13 @@ class GoogleDriveService {
 
   GoogleSignInAccount? _currentUser;
 
-  Future<bool> signIn() async {
+  Future<String?> signIn() async {
     try {
       _currentUser = await _googleSignIn.signIn();
-      return _currentUser != null;
+      return _currentUser != null ? null : 'Sign-in was cancelled or failed.';
     } catch (e) {
-      print('Google Drive Sign-In Error: $e');
-      return false;
+      debugPrint('Google Drive Sign-In Error: $e');
+      return 'Sign-In Error: $e';
     }
   }
 
@@ -35,10 +36,10 @@ class GoogleDriveService {
     _currentUser = null;
   }
 
-  Future<bool> backupDatabase(String password) async {
+  Future<String?> backupDatabase(String password) async {
     if (_currentUser == null) {
-      final success = await signIn();
-      if (!success) return false;
+      final error = await signIn();
+      if (error != null) return error;
     }
 
     try {
@@ -49,7 +50,7 @@ class GoogleDriveService {
       // 1. Get local database path
       String dbPath = join(await getDatabasesPath(), 'expencify.db');
       final dbFile = File(dbPath);
-      if (!await dbFile.exists()) return false;
+      if (!await dbFile.exists()) return 'Local database file not found.';
 
       // 2. Read and Encrypt bytes
       final bytes = await dbFile.readAsBytes();
@@ -84,17 +85,17 @@ class GoogleDriveService {
           uploadMedia: media,
         );
       }
-      return true;
+      return null;
     } catch (e) {
-      print('Google Drive Backup Error: $e');
-      return false;
+      debugPrint('Google Drive Backup Error: $e');
+      return 'Backup Error: $e';
     }
   }
 
-  Future<bool> restoreDatabase(String password) async {
+  Future<String?> restoreDatabase(String password) async {
     if (_currentUser == null) {
-      final success = await signIn();
-      if (!success) return false;
+      final error = await signIn();
+      if (error != null) return error;
     }
 
     try {
@@ -108,7 +109,7 @@ class GoogleDriveService {
         q: "name = 'expencify_backup.enc'",
       );
 
-      if (fileList.files == null || fileList.files!.isEmpty) return false;
+      if (fileList.files == null || fileList.files!.isEmpty) return 'No backup file found in Google Drive.';
 
       final fileId = fileList.files!.first.id!;
 
@@ -138,13 +139,14 @@ class GoogleDriveService {
       String dbPath = join(await getDatabasesPath(), 'expencify.db');
       final dbFile = File(dbPath);
       
-      // Close the database before overwriting would be ideal, 
-      // but sqflite usually handles this if we restart or use a helper.
+      // Close the database to release the file lock and clear the cached instance
+      await DatabaseHelper().closeDatabase();
+      
       await dbFile.writeAsBytes(decryptedBytes);
-      return true;
+      return null;
     } catch (e) {
-      print('Google Drive Restore Error: $e');
-      return false;
+      debugPrint('Google Drive Restore Error: $e');
+      return 'Restore Error: $e';
     }
   }
 }

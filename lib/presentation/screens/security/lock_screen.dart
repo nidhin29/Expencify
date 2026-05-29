@@ -27,20 +27,25 @@ class _LockScreenState extends State<LockScreen> {
 
   Future<void> _loadPinAndTryBiometrics() async {
     final pin = await _security.getPin();
-    if (mounted) {
-      setState(() {
-        _expectedPin = pin;
-        _isLoading = false;
-      });
-    }
     final bioEnabled = await _security.isBiometricEnabled();
+    
+    if (!mounted) return;
+
+    setState(() {
+      _expectedPin = pin;
+      _isLoading = false;
+      if (bioEnabled) {
+        _isBiometricPromptActive = true;
+      }
+    });
+
     if (bioEnabled) {
-      _tryBiometrics();
+      _tryBiometrics(alreadyActive: true);
     }
   }
 
-  Future<void> _tryBiometrics() async {
-    if (mounted) setState(() => _isBiometricPromptActive = true);
+  Future<void> _tryBiometrics({bool alreadyActive = false}) async {
+    if (!alreadyActive && mounted) setState(() => _isBiometricPromptActive = true);
     final success = await _auth.authenticateWithBiometrics();
     if (success) {
       widget.onUnlocked();
@@ -105,6 +110,33 @@ class _LockScreenState extends State<LockScreen> {
       );
     }
 
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: theme.colorScheme.surface,
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
       body: SafeArea(
@@ -138,10 +170,7 @@ class _LockScreenState extends State<LockScreen> {
                         ),
                       ),
                       const SizedBox(height: 40),
-                      if (_isLoading)
-                        const SizedBox(height: 14) // Same height as dots
-                      else
-                        _buildPinDots(theme),
+                      _buildPinDots(theme),
                       const SizedBox(height: 12),
                       if (_error.isNotEmpty)
                         Text(

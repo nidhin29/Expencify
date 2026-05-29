@@ -7,6 +7,8 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
 import 'dart:ui';
+import 'package:showcaseview/showcaseview.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:expencify/presentation/theme/app_theme.dart';
 import 'package:expencify/presentation/screens/transactions/transaction_entry_screen.dart';
@@ -45,14 +47,25 @@ import 'package:collection/collection.dart';
 final RouteObserver<ModalRoute<void>> homeRouteObserver =
     RouteObserver<ModalRoute<void>>();
 
-class HomeScreen extends StatefulWidget {
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  Widget build(BuildContext context) {
+    return ShowCaseWidget(
+      builder: (context) => const _HomeScreenContent(),
+    );
+  }
 }
 
-class _HomeScreenState extends State<HomeScreen>
+class _HomeScreenContent extends StatefulWidget {
+  const _HomeScreenContent();
+
+  @override
+  State<_HomeScreenContent> createState() => _HomeScreenContentState();
+}
+
+class _HomeScreenContentState extends State<_HomeScreenContent>
     with TickerProviderStateMixin, RouteAware {
   late AnimationController _pulseController;
   late AnimationController _orbitController;
@@ -81,12 +94,19 @@ class _HomeScreenState extends State<HomeScreen>
   final _ocrService = OCRService();
   StreamSubscription? _smsSubscription;
 
+  // Showcase Keys
+  final GlobalKey _aiChatKey = GlobalKey();
+  final GlobalKey _moreMenuKey = GlobalKey();
+  final GlobalKey _accountsTabKey = GlobalKey();
+  final GlobalKey _voiceFabKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
     // Use WidgetsBinding to call _loadData after Provider is accessible
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadData();
+      _checkAndStartTutorial();
     });
 
     _pulseController = AnimationController(
@@ -127,7 +147,12 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void didPopNext() {
     // Called whenever a route above HomeScreen is popped (e.g. TransactionEntry).
-    if (mounted) _loadData(silent: true);
+    if (mounted) {
+      _loadData(silent: true);
+      if (_currentIndex == 0) {
+        _checkAndStartTutorial();
+      }
+    }
   }
 
   @override
@@ -138,6 +163,25 @@ class _HomeScreenState extends State<HomeScreen>
     _orbitController.dispose();
     _voiceService.stopListening();
     super.dispose();
+  }
+
+  Future<void> _checkAndStartTutorial() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bool tutorialShown = prefs.getBool('home_tutorial_shown') ?? false;
+    
+    if (!tutorialShown && mounted) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          ShowCaseWidget.of(context).startShowCase([
+            _aiChatKey,
+            _moreMenuKey,
+            _accountsTabKey,
+            _voiceFabKey,
+          ]);
+          prefs.setBool('home_tutorial_shown', true);
+        }
+      });
+    }
   }
 
   Future<void> _loadData({bool silent = false}) async {
@@ -276,7 +320,11 @@ class _HomeScreenState extends State<HomeScreen>
         statusBarBrightness: theme.brightness, // For iOS
       ),
       child: Scaffold(
-        floatingActionButton: _buildVoiceButton(),
+        floatingActionButton: Showcase(
+          key: _voiceFabKey,
+          description: 'Hold to speak your expense, or tap to scan a receipt.',
+          child: _buildVoiceButton(),
+        ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
         bottomNavigationBar: _buildBottomNav(theme),
         body: MultiBlocListener(
@@ -301,10 +349,10 @@ class _HomeScreenState extends State<HomeScreen>
                     index: _currentIndex,
                     children: [
                       _buildDashboardView(theme),
-                      TransactionListScreen(onRefresh: _loadData),
-                      BudgetScreen(onRefresh: _loadData),
-                      const AccountManagementScreen(),
-                      const SettingsScreen(),
+                      TransactionListScreen(onRefresh: _loadData, isActive: _currentIndex == 1),
+                      BudgetScreen(onRefresh: _loadData, isActive: _currentIndex == 2),
+                      AccountManagementScreen(isActive: _currentIndex == 3),
+                      SettingsScreen(isActive: _currentIndex == 4),
                     ],
                   ),
                 ),
@@ -327,7 +375,9 @@ class _HomeScreenState extends State<HomeScreen>
           SliverToBoxAdapter(child: _buildHeadsUpReminder(theme)),
           _buildAccountSelectorChips(theme),
           SliverToBoxAdapter(child: _buildBalanceCard(theme)),
-          SliverToBoxAdapter(child: _buildQuickActions(theme)),
+          SliverToBoxAdapter(
+            child: _buildQuickActions(theme),
+          ),
           SliverToBoxAdapter(
             child: _buildSectionHeader(
               theme,
@@ -393,26 +443,34 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
             // Removed _buildAccountSelector from Row
-            IconButton(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ChatScreen()),
+            Showcase(
+              key: _aiChatKey,
+              description: 'Chat with Expencify AI for instant financial advice.',
+              child: IconButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ChatScreen()),
+                ),
+                icon: Icon(
+                  Icons.psychology_outlined,
+                  size: 24,
+                  color: cs.primary,
+                ),
+                tooltip: 'Ask Expencify AI',
               ),
-              icon: Icon(
-                Icons.psychology_outlined,
-                size: 24,
-                color: cs.primary,
-              ),
-              tooltip: 'Ask Expencify AI',
             ),
-            IconButton(
-              onPressed: _openMoreSheet,
-              icon: Icon(
-                Icons.grid_view_rounded,
-                size: 22,
-                color: cs.onSurfaceVariant,
+            Showcase(
+              key: _moreMenuKey,
+              description: 'This menu contains Settings, Subscriptions, and Appliances. Tap here to manage your app preferences.',
+              child: IconButton(
+                onPressed: _openMoreSheet,
+                icon: Icon(
+                  Icons.grid_view_rounded,
+                  size: 22,
+                  color: cs.onSurfaceVariant,
+                ),
+                tooltip: 'More',
               ),
-              tooltip: 'More',
             ),
           ],
         ),
@@ -1279,11 +1337,15 @@ class _HomeScreenState extends State<HomeScreen>
           _buildNavItem(theme, 1, Icons.receipt_long_rounded, 'Passbook'),
           const SizedBox(width: 40), // FAB notch gap
           _buildNavItem(theme, 2, Icons.pie_chart_rounded, 'Budget'),
-          _buildNavItem(
-            theme,
-            3,
-            Icons.account_balance_wallet_rounded,
-            'Accounts',
+          Showcase(
+            key: _accountsTabKey,
+            description: "First step: Go to the Accounts page to add your bank wallets. You need to do this before adding transactions!",
+            child: _buildNavItem(
+              theme,
+              3,
+              Icons.account_balance_wallet_rounded,
+              'Accounts',
+            ),
           ),
         ],
       ),
@@ -1301,7 +1363,12 @@ class _HomeScreenState extends State<HomeScreen>
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurface.withOpacity(0.6);
     return InkWell(
-      onTap: () => setState(() => _currentIndex = index),
+      onTap: () {
+        setState(() => _currentIndex = index);
+        if (index == 0) {
+          _checkAndStartTutorial();
+        }
+      },
       customBorder: const CircleBorder(),
       child: Column(
         mainAxisSize: MainAxisSize.min,

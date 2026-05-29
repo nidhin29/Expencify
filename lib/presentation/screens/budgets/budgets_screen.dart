@@ -17,9 +17,11 @@ import 'package:expencify/application/blocs/budget/budget_state.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
 
+
 class BudgetScreen extends StatefulWidget {
   final VoidCallback? onRefresh;
-  const BudgetScreen({super.key, this.onRefresh});
+  final bool isActive;
+  const BudgetScreen({super.key, this.onRefresh, this.isActive = false});
 
   @override
   State<BudgetScreen> createState() => _BudgetScreenState();
@@ -34,7 +36,6 @@ class _BudgetScreenState extends State<BudgetScreen> {
   String _period = 'monthly';
   int? _lastAccountId;
   StreamSubscription? _smsSub;
-
   @override
   void initState() {
     super.initState();

@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
+
+
 import 'package:expencify/domain/entities/account.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_event.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
 
 class AccountManagementScreen extends StatefulWidget {
-  const AccountManagementScreen({super.key});
+  final bool isActive;
+  const AccountManagementScreen({super.key, this.isActive = false});
 
   @override
   State<AccountManagementScreen> createState() =>

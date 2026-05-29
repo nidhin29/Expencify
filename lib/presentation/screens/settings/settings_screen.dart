@@ -25,7 +25,8 @@ import 'package:expencify/application/services/backup/backup_service.dart';
 import 'package:expencify/application/services/backup/google_drive_service.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final bool isActive;
+  const SettingsScreen({super.key, this.isActive = false});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -37,13 +38,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _appLockEnabled = false;
   bool _biometricEnabled = false;
   bool _biometricAvailable = false;
-
+  
   @override
   void initState() {
     super.initState();
     _loadPrefs();
   }
-
+  
   Future<void> _loadPrefs() async {
     final canBio = await _authService.isBiometricsAvailable();
     final isLockEnabled = await _security.isSecurityEnabled();
@@ -427,15 +428,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       const SnackBar(content: Text('Starting Cloud Backup...')),
     );
 
-    final success = await GoogleDriveService().backupDatabase(pin);
+    final error = await GoogleDriveService().backupDatabase(pin);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            success ? 'Cloud backup successful!' : 'Cloud backup failed.',
+            error == null ? 'Cloud backup successful!' : 'Failed: $error',
           ),
-          backgroundColor: success ? Colors.green : Colors.red,
+          backgroundColor: error == null ? Colors.green : Colors.red,
+          duration: error == null ? const Duration(seconds: 2) : const Duration(seconds: 4),
         ),
       );
     }
@@ -476,10 +478,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (confirm != true || !mounted) return;
 
-    final success = await GoogleDriveService().restoreDatabase(pin);
+    final error = await GoogleDriveService().restoreDatabase(pin);
 
     if (mounted) {
-      if (success) {
+      if (error == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Data restored successfully! Restarting...'),
@@ -492,9 +494,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Restore failed. Check your connection and PIN.'),
+          SnackBar(
+            content: Text('Restore failed: $error'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -603,6 +606,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             _buildTile(
               theme,
+              Icons.play_circle_outline_rounded,
+              'Replay App Tutorials',
+              () async {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool('home_tutorial_shown', false);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Tutorials reset! Navigate to tabs to see them.'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+            ),
+            _buildTile(
+              theme,
               Icons.delete_sweep_rounded,
               'Wipe All Data',
               _handleWipeData,
@@ -683,7 +703,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'Change PIN',
                 _handlePinChange,
               ),
-          ]),
+            ]),
           const SizedBox(height: 60),
           Center(
             child: Text(

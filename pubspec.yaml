@@ -71,6 +71,7 @@ dependencies:
   encrypt: ^5.0.3
   clock: ^1.1.1
   crypto: ^3.0.6
+  showcaseview: ^5.0.2
 
 dev_dependencies:
   flutter_test:

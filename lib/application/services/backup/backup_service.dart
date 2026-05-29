@@ -56,10 +56,9 @@ class BackupService {
         return false;
       }
 
-      // Close current database connection
+      // Close current database connection and reset the cached instance
       final dbHelper = DatabaseHelper();
-      final db = await dbHelper.database;
-      await db.close();
+      await dbHelper.closeDatabase();
 
       // Replace the database file
       final dbPath = join(await getDatabasesPath(), 'expencify.db');
