@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:expencify/application/services/ai/ai_service.dart';
 import 'package:expencify/application/services/ai/local_ai_model.dart';
+import 'package:expencify/application/services/sms/sms_monitor_service.dart';
 
 class SetupRequiredScreen extends StatefulWidget {
   final void Function(BuildContext context) onComplete;
@@ -57,8 +58,50 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
   }
 
   Future<void> _requestSms() async {
-    await Permission.sms.request();
-    _checkRequirements();
+    final bool? proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('SMS Permission Required'),
+          content: const SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text(
+                  'Spendy requires access to read your SMS messages. '
+                  'This is the core functionality of the app, allowing it to '
+                  'automatically read bank transaction alerts and update your '
+                  'budget in real-time.',
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'Your messages are processed locally on your device and are never shared or sent to any servers.',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Deny'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            FilledButton(
+              child: const Text('Accept & Continue'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (proceed == true) {
+      await Permission.sms.request();
+      _checkRequirements();
+      if (await Permission.sms.isGranted) {
+        SmsMonitorService().startBackgroundListening();
+      }
+    }
   }
 
   Future<void> _requestBattery() async {
@@ -139,7 +182,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
               ),
               const SizedBox(height: 12),
               Text(
-                'To ensure 100% accurate and automatic tracking, Expencify requires the following settings to be enabled.',
+                'To ensure 100% accurate and automatic tracking, Spendy requires the following settings to be enabled.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: cs.onSurface.withOpacity(0.6),
                   height: 1.5,

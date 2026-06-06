@@ -67,10 +67,7 @@ class SmsMonitorService {
     // ── Step 1: Permission check ────────────────────────────────────────────
     bool granted = await Permission.sms.isGranted;
     if (!granted) {
-      granted = await requestPermission();
-    }
-    if (!granted) {
-      debugPrint('>>> [SmsMonitorService] SMS permission denied – aborting.');
+      debugPrint('>>> [SmsMonitorService] SMS permission not granted yet – aborting background listener startup.');
       return;
     }
     debugPrint('>>> [SmsMonitorService] SMS permission granted');

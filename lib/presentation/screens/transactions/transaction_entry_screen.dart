@@ -447,7 +447,7 @@ class _TransactionEntryScreenState extends State<TransactionEntryScreen>
               ),
               const SizedBox(height: 12),
               Text(
-                'Snap a receipt photo and Expencify will extract the amounts for you automatically.',
+                'Snap a receipt photo and Spendy will extract the amounts for you automatically.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withOpacity(0.4),

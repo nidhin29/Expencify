@@ -439,13 +439,13 @@ class AIService {
 
       // Single lean prompt — maximises token budget available for the response
       final prompt = isAdviceQuery
-          ? 'You are Expencify AI, a helpful Indian finance assistant. '
+          ? 'You are Spendy AI, a helpful Indian finance assistant. '
                 'Provide helpful advice. Answer concisely. Do NOT use numbers unless present below.\n'
                 '$chatHint'
                 'Data: $context\n'
                 'User: $query\n'
                 'Answer:'
-          : 'You are Expencify AI, a concise Indian finance assistant. '
+          : 'You are Spendy AI, a concise Indian finance assistant. '
                 'Answer in 1-2 short sentences using ONLY the numbers below. Do NOT invent data.\n'
                 '$chatHint'
                 'Data: $context\n'
@@ -534,7 +534,7 @@ class AIService {
       final now = DateTime.now();
       final systemPrompt =
           '''
-You are Expencify AI. Parse transaction/OCR text into JSON.
+You are Spendy AI. Parse transaction/OCR text into JSON.
 Current Date: ${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}
 Categories: [Food, Fuel, Shopping, Rent, Travel, Health, Salary, Bills, Grocery, Other].
 Rules:

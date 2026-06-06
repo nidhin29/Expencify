@@ -20,7 +20,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   final List<OnboardingData> _pages = [
     OnboardingData(
-      title: 'Welcome to Expencify',
+      title: 'Welcome to Spendy',
       description:
           'Your privacy-first, offline-first smart finance manager. All your data stays on your device and is never shared with third-party servers.',
       icon: Icons.shield_rounded,
@@ -34,7 +34,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     OnboardingData(
       title: 'Automate with SMS',
       description:
-          'Tired of manual entry? Expencify can securely read bank transaction SMS alerts and log them automatically. \n\nIMPORTANT: You must add your Bank Account in the Accounts tab (and ensure the Bank Name matches your SMS) for the AI to recognize and track your messages!',
+          'Tired of manual entry? Spendy can securely read bank transaction SMS alerts and log them automatically. \n\nIMPORTANT: You must add your Bank Account in the Accounts tab (and ensure the Bank Name matches your SMS) for the AI to recognize and track your messages!',
       icon: Icons.sms_rounded,
     ),
     OnboardingData(

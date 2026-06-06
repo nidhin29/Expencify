@@ -27,7 +27,7 @@ class CSVService {
     List<List<dynamic>> rows = [];
 
     // Metadata
-    rows.add(['Expencify - Transaction Export']);
+    rows.add(['Spendy - Transaction Export']);
     rows.add(['Generated On:', dateFmt.format(DateTime.now())]);
 
     if (from != null && to != null) {
@@ -83,7 +83,7 @@ class CSVService {
     final csv = const ListToCsvConverter().convert(rows);
     final directory = await getApplicationDocumentsDirectory();
     final path =
-        '${directory.path}/expencify_${DateTime.now().millisecondsSinceEpoch}.csv';
+        '${directory.path}/spendy_${DateTime.now().millisecondsSinceEpoch}.csv';
     await File(path).writeAsString(csv);
     return path;
   }

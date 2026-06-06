@@ -59,7 +59,7 @@ class GoogleDriveService {
       // 3. Check if file already exists in AppData
       final fileList = await driveApi.files.list(
         spaces: 'appDataFolder',
-        q: "name = 'expencify_backup.enc'",
+        q: "name = 'spendy_backup.enc'",
       );
 
       final media = drive.Media(
@@ -78,7 +78,7 @@ class GoogleDriveService {
       } else {
         // Create new
         final driveFile = drive.File()
-          ..name = 'expencify_backup.enc'
+          ..name = 'spendy_backup.enc'
           ..parents = ['appDataFolder'];
         await driveApi.files.create(
           driveFile,
@@ -106,7 +106,7 @@ class GoogleDriveService {
       // 1. Find the file
       final fileList = await driveApi.files.list(
         spaces: 'appDataFolder',
-        q: "name = 'expencify_backup.enc'",
+        q: "name = 'spendy_backup.enc'",
       );
 
       if (fileList.files == null || fileList.files!.isEmpty) return 'No backup file found in Google Drive.';

@@ -183,7 +183,7 @@ class _ExpencifyAppState extends State<ExpencifyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Expencify',
+      title: 'Spendy',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,

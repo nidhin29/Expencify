@@ -431,7 +431,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        'Expencify',
+                        'Spendy',
                         style: theme.textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w800,
                           letterSpacing: -1,
@@ -445,7 +445,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
             // Removed _buildAccountSelector from Row
             Showcase(
               key: _aiChatKey,
-              description: 'Chat with Expencify AI for instant financial advice.',
+              description: 'Chat with Spendy AI for instant financial advice.',
               child: IconButton(
                 onPressed: () => Navigator.push(
                   context,
@@ -456,7 +456,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                   size: 24,
                   color: cs.primary,
                 ),
-                tooltip: 'Ask Expencify AI',
+                tooltip: 'Ask Spendy AI',
               ),
             ),
             Showcase(
@@ -1854,7 +1854,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                   padding: const EdgeInsets.symmetric(horizontal: 40),
                   child: Text(
                     _isAiThinking
-                        ? 'Expencify is processing your request'
+                        ? 'Spendy is processing your request'
                         : 'Say something like "I spent 500 on dinner"',
                     textAlign: TextAlign.center,
                     style: TextStyle(

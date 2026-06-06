@@ -38,13 +38,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _appLockEnabled = false;
   bool _biometricEnabled = false;
   bool _biometricAvailable = false;
-  
+
   @override
   void initState() {
     super.initState();
     _loadPrefs();
   }
-  
+
   Future<void> _loadPrefs() async {
     final canBio = await _authService.isBiometricsAvailable();
     final isLockEnabled = await _security.isSecurityEnabled();
@@ -59,7 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _showExportDialog() async {
     final accountRepo = context.read<AccountRepository>();
     final categoryRepo = context.read<CategoryRepository>();
-    
+
     final accounts = await accountRepo.getAll();
     final categories = await categoryRepo.getAll();
 
@@ -288,7 +288,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Share the file so user can save/send it anywhere
     await Share.shareXFiles([
       XFile(path),
-    ], text: 'Expencify transactions exported as ${format.toUpperCase()}');
+    ], text: 'Spendy transactions exported as ${format.toUpperCase()}');
   }
 
   Future<void> _handleWipeData() async {
@@ -412,7 +412,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _handleCloudBackup() async {
     final pin = await _security.getPin();
     if (!mounted) return;
-    
+
     if (pin == null || pin.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -424,9 +424,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Starting Cloud Backup...')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Starting Cloud Backup...')));
 
     final error = await GoogleDriveService().backupDatabase(pin);
 
@@ -437,7 +437,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             error == null ? 'Cloud backup successful!' : 'Failed: $error',
           ),
           backgroundColor: error == null ? Colors.green : Colors.red,
-          duration: error == null ? const Duration(seconds: 2) : const Duration(seconds: 4),
+          duration: error == null
+              ? const Duration(seconds: 2)
+              : const Duration(seconds: 4),
         ),
       );
     }
@@ -614,7 +616,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Tutorials reset! Navigate to tabs to see them.'),
+                      content: Text(
+                        'Tutorials reset! Navigate to tabs to see them.',
+                      ),
                       duration: Duration(seconds: 2),
                     ),
                   );
@@ -703,11 +707,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'Change PIN',
                 _handlePinChange,
               ),
-            ]),
+          ]),
           const SizedBox(height: 60),
           Center(
             child: Text(
-              'Expencify v1.0.0\nAll financial data is stored locally on your device.',
+              'Spendy v1.0.0\nAll financial data is stored locally on your device.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withOpacity(0.5),

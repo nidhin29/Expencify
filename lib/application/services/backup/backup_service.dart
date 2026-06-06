@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:expencify/infrastructure/database/database_helper.dart';
 
 class BackupService {
-  static const String _backupExtension = '.expencify';
+  static const String _backupExtension = '.spendy';
 
   /// Exports the current database to a shared file.
   Future<bool> exportBackup() async {
@@ -21,15 +21,15 @@ class BackupService {
       final tempDir = await getTemporaryDirectory();
       final backupPath = join(
         tempDir.path,
-        'expencify_backup_${DateTime.now().millisecondsSinceEpoch}$_backupExtension',
+        'spendy_backup_${DateTime.now().millisecondsSinceEpoch}$_backupExtension',
       );
 
       await dbFile.copy(backupPath);
 
       await Share.shareXFiles(
         [XFile(backupPath)],
-        subject: 'Expencify Data Backup',
-        text: 'Your Expencify data backup file. Keep this safe!',
+        subject: 'Spendy Data Backup',
+        text: 'Your Spendy data backup file. Keep this safe!',
       );
 
       return true;

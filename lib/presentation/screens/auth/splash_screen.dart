@@ -163,7 +163,7 @@ class _SplashScreenState extends State<SplashScreen>
                           ),
                           const SizedBox(height: 32),
                           const Text(
-                            'EXPENCIFY',
+                            'SPENDY',
                             style: TextStyle(
                               color: Colors.white,
                               fontSize: 42,

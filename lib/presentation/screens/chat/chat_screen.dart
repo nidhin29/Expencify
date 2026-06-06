@@ -47,7 +47,7 @@ class _ChatScreenState extends State<ChatScreen> {
           if (_messages.isEmpty) {
             _messages.add({
               'text':
-                  'Hello! I am Expencify AI, your AI financial assistant. How can I help you today?',
+                  'Hello! I am Spendy AI, your AI financial assistant. How can I help you today?',
               'isUser': false,
             });
           }
@@ -109,7 +109,7 @@ class _ChatScreenState extends State<ChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Expencify AI',
+              'Spendy AI',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Row(

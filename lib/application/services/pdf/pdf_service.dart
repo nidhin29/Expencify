@@ -69,7 +69,7 @@ class PdfService {
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                 children: [
                   pw.Text(
-                    'Expencify — Transaction Report',
+                    'Spendy — Transaction Report',
                     style: pw.TextStyle(
                       color: PdfColors.white,
                       fontSize: 16,
@@ -240,7 +240,7 @@ class PdfService {
 
     final dir = await getApplicationDocumentsDirectory();
     final path =
-        '${dir.path}/expencify_${DateTime.now().millisecondsSinceEpoch}.pdf';
+        '${dir.path}/spendy_${DateTime.now().millisecondsSinceEpoch}.pdf';
     await File(path).writeAsBytes(await doc.save());
     return path;
   }
