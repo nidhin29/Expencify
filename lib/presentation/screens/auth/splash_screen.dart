@@ -8,6 +8,7 @@ import '../../../application/services/security/security_service.dart';
 import '../home/home_screen.dart';
 import '../setup/setup_required_screen.dart';
 import 'onboarding_screen.dart';
+import '../../../upgrader_config.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -49,6 +50,13 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _navigateToNext() async {
     await Future.delayed(const Duration(milliseconds: 3000));
     if (!mounted) return;
+
+    // Check if an app upgrade is required and block navigation if needed
+    await appUpgrader.initialize();
+    if (appUpgrader.shouldDisplayUpgrade()) {
+      debugPrint('>>> [SplashScreen] Upgrade is required. Blocking navigation.');
+      return;
+    }
 
     final authService = AuthService();
     final bool onboarded = await authService.isOnboarded();

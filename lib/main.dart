@@ -43,6 +43,9 @@ import 'presentation/screens/auth/splash_screen.dart';
 import 'presentation/screens/home/home_screen.dart' show homeRouteObserver;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:upgrader/upgrader.dart';
+import 'upgrader_config.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -183,6 +186,7 @@ class _ExpencifyAppState extends State<ExpencifyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Spendy',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
@@ -190,20 +194,22 @@ class _ExpencifyAppState extends State<ExpencifyApp> {
       themeMode: ThemeMode.light,
       navigatorObservers: [homeRouteObserver],
       builder: (context, child) {
-        return Stack(
-          children: [
-            if (child != null) child,
-            if (_security.isLocked)
-              LockScreen(onUnlocked: () => _security.unlock()),
-          ],
+        return UpgradeAlert(
+          navigatorKey: navigatorKey,
+          upgrader: appUpgrader,
+          showIgnore: false,
+          showLater: false,
+          dialogStyle: UpgradeDialogStyle.cupertino,
+          child: Stack(
+            children: [
+              if (child != null) child,
+              if (_security.isLocked)
+                LockScreen(onUnlocked: () => _security.unlock()),
+            ],
+          ),
         );
       },
-      home: UpgradeAlert(
-        showIgnore: false,
-        showLater: false,
-        dialogStyle: UpgradeDialogStyle.cupertino,
-        child: widget.initialScreen,
-      ),
+      home: widget.initialScreen,
     );
   }
 }
