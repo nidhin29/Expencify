@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:expencify/domain/entities/account.dart';
 import 'package:expencify/domain/entities/transaction.dart';
@@ -569,6 +570,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open link: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -707,6 +721,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'Change PIN',
                 _handlePinChange,
               ),
+          ]),
+          const SizedBox(height: 24),
+          _buildGroup(theme, 'About & Legal', [
+            _buildTile(
+              theme,
+              Icons.privacy_tip_rounded,
+              'Privacy Policy',
+              () => _launchUrl('https://spendy-privacy.devforchange.com/'),
+              subtitle: 'How we protect your offline data',
+            ),
+            _buildTile(
+              theme,
+              Icons.description_rounded,
+              'Terms and Conditions',
+              () => _launchUrl('https://spendy-terms.devforchange.com/'),
+              subtitle: 'Usage guidelines and disclaimers',
+            ),
           ]),
           const SizedBox(height: 60),
           Center(

@@ -72,6 +72,7 @@ dependencies:
   clock: ^1.1.1
   crypto: ^3.0.6
   showcaseview: ^5.0.2
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:

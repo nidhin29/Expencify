@@ -1339,7 +1339,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
           _buildNavItem(theme, 2, Icons.pie_chart_rounded, 'Budget'),
           Showcase(
             key: _accountsTabKey,
-            description: "First step: Go to the Accounts page to add your bank wallets. You need to do this before adding transactions!",
+            description: "First step: Go to Accounts to add bank wallets. CRITICAL: You must enter the correct Bank Name and Last 4 Digits for automatic SMS tracking to work!",
             child: _buildNavItem(
               theme,
               3,

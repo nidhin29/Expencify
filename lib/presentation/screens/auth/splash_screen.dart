@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../application/services/ai/ai_service.dart';
 import '../../../application/services/ai/local_ai_model.dart';
 import '../../../application/services/auth/auth_service.dart';
@@ -62,7 +63,9 @@ class _SplashScreenState extends State<SplashScreen>
       final sms = await Permission.sms.isGranted;
       final battery = await Permission.ignoreBatteryOptimizations.isGranted;
       final ai = await AIService().modelExists(LocalAIModelType.qwenLite);
-      final requirementsMet = sms && battery && ai;
+      final prefs = await SharedPreferences.getInstance();
+      final legalAccepted = prefs.getBool('legal_terms_accepted') ?? false;
+      final requirementsMet = sms && battery && ai && legalAccepted;
 
       if (!mounted) return;
 

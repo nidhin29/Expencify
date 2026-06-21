@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:expencify/application/services/ai/ai_service.dart';
 import 'package:expencify/application/services/ai/local_ai_model.dart';
 import 'package:expencify/application/services/sms/sms_monitor_service.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SetupRequiredScreen extends StatefulWidget {
   final void Function(BuildContext context) onComplete;
@@ -20,6 +23,7 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
   bool _isDownloading = false;
   bool _isPaused = false;
   double _downloadProgress = 0;
+  bool _isAccepted = false;
 
   final _aiService = AIService();
 
@@ -47,12 +51,15 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
     final sms = await Permission.sms.isGranted;
     final battery = await Permission.ignoreBatteryOptimizations.isGranted;
     final ai = await _aiService.modelExists(LocalAIModelType.qwenLite);
+    final prefs = await SharedPreferences.getInstance();
+    final legal = prefs.getBool('legal_terms_accepted') ?? false;
 
     if (mounted) {
       setState(() {
         _hasSmsPermission = sms;
         _isBatteryOptimizationIgnored = battery;
         _isAiModelInstalled = ai;
+        _isAccepted = legal;
       });
     }
   }
@@ -107,6 +114,19 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
   Future<void> _requestBattery() async {
     await Permission.ignoreBatteryOptimizations.request();
     _checkRequirements();
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open link: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _downloadAi() async {
@@ -222,9 +242,64 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                     : (_isPaused ? 'Resume' : 'Initialize'),
               ),
               const SizedBox(height: 48),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    height: 24,
+                    width: 24,
+                    child: Checkbox(
+                      value: _isAccepted,
+                      onChanged: (val) async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('legal_terms_accepted', val ?? false);
+                        setState(() => _isAccepted = val ?? false);
+                      },
+                      activeColor: cs.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        text: 'I accept the ',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: cs.onSurface.withOpacity(0.7),
+                        ),
+                        children: [
+                          TextSpan(
+                            text: 'Privacy Policy',
+                            style: const TextStyle(
+                              color: Colors.blue,
+                              decoration: TextDecoration.underline,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            recognizer: TapGestureRecognizer()
+                              ..onTap = () => _launchUrl('https://spendy-privacy.devforchange.com/'),
+                          ),
+                          const TextSpan(text: ' and '),
+                          TextSpan(
+                            text: 'Terms & Conditions',
+                            style: const TextStyle(
+                              color: Colors.blue,
+                              decoration: TextDecoration.underline,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            recognizer: TapGestureRecognizer()
+                              ..onTap = () => _launchUrl('https://spendy-terms.devforchange.com/'),
+                          ),
+                          const TextSpan(text: ' for using Spendy.'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 28),
               if (_hasSmsPermission &&
                   _isBatteryOptimizationIgnored &&
-                  _isAiModelInstalled)
+                  _isAiModelInstalled &&
+                  _isAccepted)
                 ElevatedButton(
                   onPressed: () => widget.onComplete(context),
                   style: ElevatedButton.styleFrom(
@@ -263,7 +338,9 @@ class _SetupRequiredScreenState extends State<SetupRequiredScreen>
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Setup all requirements to unlock',
+                        (!_hasSmsPermission || !_isBatteryOptimizationIgnored || !_isAiModelInstalled)
+                            ? 'Setup all requirements to unlock'
+                            : 'Accept Terms & Privacy to continue',
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: cs.onSurface.withOpacity(0.3),
                           letterSpacing: 1.2,
