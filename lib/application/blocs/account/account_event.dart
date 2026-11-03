@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/account.dart';
 
@@ -20,7 +21,8 @@ class SelectAccount extends AccountEvent {
 
 class AddAccount extends AccountEvent {
   final Account account;
-  const AddAccount(this.account);
+  final Completer<bool>? completion;
+  const AddAccount(this.account, {this.completion});
 
   @override
   List<Object?> get props => [account];
@@ -28,7 +30,8 @@ class AddAccount extends AccountEvent {
 
 class UpdateAccount extends AccountEvent {
   final Account account;
-  const UpdateAccount(this.account);
+  final Completer<bool>? completion;
+  const UpdateAccount(this.account, {this.completion});
 
   @override
   List<Object?> get props => [account];

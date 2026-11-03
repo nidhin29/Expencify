@@ -18,7 +18,7 @@ class SmsParserService {
     final type = _extractType(text);
     if (type == null) return null;
 
-    final amount = _extractAmount(sms);
+    final amount = _extractAmount(sms, type);
     if (amount == null) return null;
 
     final merchant = _extractMerchant(sms);
@@ -36,20 +36,28 @@ class SmsParserService {
     };
   }
 
+  static bool needsReview(String sms) {
+    final text = sms.toLowerCase();
+    return _isBankSms(text) &&
+        !_isInformationalAlert(text) &&
+        !_isMarketing(text) &&
+        _completedActions(text).isNotEmpty;
+  }
+
   /// Extracts just the last 4 digits of account/card from an SMS.
   /// Used to match an SMS to a known account in the DB.
   static String? extractLastFourDigits(String sms) {
     final patterns = [
       // Matches "A/c ends 123", "A/c no. 1234", "A/cXXXXXXXX1234", "card *12"
       RegExp(
-        r'(?:a\/c|acct|account|card|bank)[a-z\s.:#]*(?:ending|ends|no|num)?[\s*x.-]*([0-9]{2,6})',
+        r'(?:a\/c|acct|account|card)\s*(?:number|no\.?|ending|ends|with|in|is|:|#|\.)*\s*(?:ending|ends|no|num)?[\s*x.-]*([0-9]{2,6})',
         caseSensitive: false,
       ),
       // Matches "XX1234", "****123", "X1234" standalone
       RegExp(r'(?:[x*]{2,})[\s-]*([0-9]{2,6})', caseSensitive: false),
-      // Matches "account number 1234", "ends with 1234" (no prefix)
+      // Only account-ending language; generic 'reference no' is not an account.
       RegExp(
-        r'(?:end|ends|ending|no|num|number)\s*(?:in|is|with)?\s*([0-9]{2,6})',
+        r'\b(?:ends?|ending)\s+(?:in|with)\s*([0-9]{2,6})(?![0-9])',
         caseSensitive: false,
       ),
     ];
@@ -60,57 +68,35 @@ class SmsParserService {
     return null;
   }
 
-  /// High-performance filter to catch marketing SMS and scams.
   static bool _isMarketing(String text) {
-    // Detection of common marketing links
-    final hasUrl =
-        text.contains('http://') ||
-        text.contains('https://') ||
-        text.contains('www.') ||
-        text.contains('.in/') ||
-        text.contains('.com/');
-
-    if (hasUrl) {
-      // If it has a URL AND marketing words, it's garbage.
-      final marketingKeywords = [
-        'offer',
-        'card',
-        'limit',
-        'apply',
-        'gift',
-        'won',
-        'voucher',
-        'click',
-        'ഓഫർ',
-        'കാർഡ്',
-        'ക്ലിക്ക്',
-        'നൽകുന്നു',
-        'സ്വന്തമാക്കൂ',
-      ];
-      if (marketingKeywords.any((k) => text.contains(k))) return true;
-    }
-    return false;
+    // A URL is neither necessary nor sufficient to identify an offer. Completed
+    // transaction alerts can contain a support link or a promotional footer.
+    if (_completedActions(text).isNotEmpty) return false;
+    return RegExp(
+      r'\b(?:welcome\s+bonus|offer|apply\s+now|eligible|congratulations|voucher|win|earn|cashback|up\s*to|first\s+(?:load|recharge|purchase)|get\s+\d+\s*%)\b|ഓഫർ|സ്വന്തമാക്കൂ|ക്ലിക്ക്',
+      caseSensitive: false,
+    ).hasMatch(text);
   }
 
   static bool _isInformationalAlert(String text) {
-    final ignoreKeywords = [
-      'avg. bal',
-      'maintained',
-      'non-maintenance',
-      'minimum balance',
-      'otp',
-      'login',
-      'password',
-      'code',
-      'statement',
-      'due to expire',
-      'kyc',
-      'rewards earned',
-      'congratulations',
-      'loan',
-      'insurance',
-    ];
-    return ignoreKeywords.any((k) => text.contains(k));
+    if (RegExp(
+      r'\b(?:otp|one[- ]time\s+(?:password|code)|verification\s+code)\b',
+      caseSensitive: false,
+    ).hasMatch(text)) {
+      return true;
+    }
+    // Failure, negation and pending states never authorize a ledger write.
+    if (RegExp(
+      r"\b(?:failed|declined|unsuccessful|pending|scheduled|requested)\b",
+      caseSensitive: false,
+    ).hasMatch(text)) {
+      return true;
+    }
+    if (_completedActions(text).isNotEmpty) return false;
+    return RegExp(
+      r'\b(?:otp|one[- ]time\s+(?:password|code)|verification\s+code|login|password|statement|kyc|minimum\s+balance|avg\.?\s*bal|amount\s+due|payment\s+due|will\s+be|due\s+on)\b',
+      caseSensitive: false,
+    ).hasMatch(text);
   }
 
   /// The Precision Dictionary: Global keywords for transaction types.
@@ -231,45 +217,208 @@ class SmsParserService {
     return false;
   }
 
-  static String? _extractType(String text) {
-    if (_dictionary['income']!.any((k) => text.contains(k))) return 'income';
-    if (_dictionary['expense']!.any((k) => text.contains(k))) return 'expense';
-    return null;
-  }
-
-  static double? _extractAmount(String sms) {
-    final patterns = [
-      // Standard formats: Rs. 500, Rs 500, INR 500, ₹ 500
-      RegExp(
-        r'(?:rs\.?|inr|₹)\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        caseSensitive: false,
-      ),
-      // Reversed: 500 Rs
-      RegExp(
-        r'([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:rs\.?|inr|₹)',
-        caseSensitive: false,
-      ),
-      // Explicit amount keyword: amount 500
-      RegExp(
-        r'(?:amount|amt)[:\s]+(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        caseSensitive: false,
-      ),
-      // Contextual: "for rs 500", "of rs 500"
-      RegExp(
-        r'(?:of|for)\s+rs\.?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        caseSensitive: false,
-      ),
-      // Plain amount at start or after punctuation (Risky but helpful)
-      RegExp(r'(?:^|[\s:])([0-9,]+\.[0-9]{2})(?:\s+|$)', caseSensitive: false),
-    ];
-    for (final p in patterns) {
-      final match = p.firstMatch(sms);
-      if (match != null) {
-        final raw = match.group(1)!.replaceAll(',', '');
-        return double.tryParse(raw);
+  static List<({String type, int start, int end})> _completedActions(
+    String text,
+  ) {
+    const weak = {
+      'refund',
+      'salary',
+      'cashback',
+      'income',
+      'payment',
+      'purchase',
+      'bill',
+      'നൽകി',
+    };
+    final actions = _accountPostingActions(text);
+    for (final entry in _dictionary.entries) {
+      for (final token in [
+        ...entry.value,
+        if (entry.key == 'income') 'refunded',
+      ]) {
+        if (weak.contains(token)) continue;
+        final latin = RegExp(r'^[a-z ]+$').hasMatch(token);
+        final pattern = RegExp(
+          '${latin ? r"\b" : ""}${RegExp.escape(token)}${latin ? r"\b" : ""}',
+          caseSensitive: false,
+        );
+        for (final match in pattern.allMatches(text)) {
+          if (token == 'received' &&
+              RegExp(
+                r'^\s*(?:(?:an?|your)\s+)?(?:offer|otp|code|request|reminder|voucher|notification|message)\b',
+                caseSensitive: false,
+              ).hasMatch(text.substring(match.end))) {
+            continue;
+          }
+          if (token == 'ക്രെഡിറ്റ്' &&
+              RegExp(
+                r'^\s*(?:കാർഡ്|ചെയ്യും|ആകും)',
+              ).hasMatch(text.substring(match.end))) {
+            continue;
+          }
+          final prefix = text.substring(
+            match.start > 50 ? match.start - 50 : 0,
+            match.start,
+          );
+          if (RegExp(
+            r"\b(?:will|would|could|may|might|shall|can)\s+(?:not\s+)?(?:be\s+)?$|\b(?:not|never)\s+(?:been\s+)?$|\bto\s+be\s*$|\b(?:hasn't|wasn't|isn't)\s+(?:been\s+)?$",
+            caseSensitive: false,
+          ).hasMatch(prefix)) {
+            continue;
+          }
+          if (RegExp(
+            r'\b(?:get|earn|avail|eligible)\b[^!?;\n]{0,80}$',
+            caseSensitive: false,
+          ).hasMatch(prefix)) {
+            continue;
+          }
+          actions.add((type: entry.key, start: match.start, end: match.end));
+        }
       }
     }
-    return null;
+    for (final match in RegExp(
+      r'\b(?:payment|purchase)\b(?:[^.!?;\n]|\.(?=[0-9])){0,60}\b(?:successful|completed)\b',
+      caseSensitive: false,
+    ).allMatches(text)) {
+      final prefix = text.substring(
+        match.start > 30 ? match.start - 30 : 0,
+        match.start,
+      );
+      if (!RegExp(
+        r'\b(?:will|would|could|may|might|not|never|get|make|ensure)\b',
+        caseSensitive: false,
+      ).hasMatch('$prefix ${match.group(0)}')) {
+        actions.add((type: 'expense', start: match.start, end: match.end));
+      }
+    }
+    return actions;
+  }
+
+  /// Bank abbreviations describe a posting only when attached to an account.
+  /// In "Dr. from A/C ... and Cr. to paytm...", the credit is the recipient's.
+  static List<({String type, int start, int end})> _accountPostingActions(
+    String text,
+  ) {
+    final actions = <({String type, int start, int end})>[];
+    final posting = RegExp(
+      r'\b(dr|cr)\.?\s+(from|to|into|in)\s+(?:(?:your|ur)\s+)?(?:a/c|acct|account|card)\b',
+      caseSensitive: false,
+    );
+    for (final match in posting.allMatches(text)) {
+      final marker = match.group(1)!.toLowerCase();
+      final direction = match.group(2)!.toLowerCase();
+      if ((marker == 'dr' && direction != 'from') ||
+          (marker == 'cr' && direction == 'from')) {
+        continue;
+      }
+      final prefix = text.substring(
+        match.start > 50 ? match.start - 50 : 0,
+        match.start,
+      );
+      if (RegExp(
+        r"\b(?:will|would|could|may|might|shall|can)\s+(?:not\s+)?(?:be\s+)?$|\b(?:not|never)\s+(?:been\s+)?$|\bto\s+be\s*$",
+        caseSensitive: false,
+      ).hasMatch(prefix)) {
+        continue;
+      }
+      actions.add((
+        type: marker == 'dr' ? 'expense' : 'income',
+        start: match.start,
+        end: match.start + 2,
+      ));
+    }
+    return actions;
+  }
+
+  static String? _extractType(String text) {
+    final types = _completedActions(text).map((action) => action.type).toSet();
+    // Mixed debit/credit messages need review; never prefer income just because
+    // 'credited' appears somewhere in a debit alert.
+    return types.length == 1 ? types.single : null;
+  }
+
+  static double? _extractAmount(String sms, String type) {
+    final text = sms.toLowerCase();
+    final actions = _completedActions(
+      text,
+    ).where((a) => a.type == type).toList();
+    const number = r'(?:[0-9]{1,3}(?:,[0-9]{2,3})+|[0-9]+)(?:\.[0-9]{1,2})?';
+    const currency =
+        r'(?:(?<![a-z])(?:rs\.?|inr|usd|eur|gbp|aed|sar)(?![a-z])|₹|درهم|\$|€|£)';
+    final patterns = [
+      RegExp('$currency\\s*($number)(?![0-9,]|\\.[0-9])', caseSensitive: false),
+      RegExp('(?<![0-9.,])($number)\\s*$currency', caseSensitive: false),
+      RegExp(
+        '\\b(?:amount|amt)[:\\s]+($number)(?![0-9,]|\\.[0-9])',
+        caseSensitive: false,
+      ),
+    ];
+    final candidates = <({double amount, int start, int end, int distance})>[];
+    for (final pattern in patterns) {
+      for (final match in pattern.allMatches(text)) {
+        final amount = double.tryParse(match.group(1)!.replaceAll(',', ''));
+        if (amount == null || !amount.isFinite || amount <= 0) continue;
+        if (candidates.any((c) => match.start < c.end && match.end > c.start)) {
+          continue;
+        }
+        final prefix = text.substring(
+          match.start > 75 ? match.start - 75 : 0,
+          match.start,
+        );
+        final suffix = text.substring(
+          match.end,
+          match.end + 25 < text.length ? match.end + 25 : text.length,
+        );
+        // Exclude balances, card limits, offers and numeric account identifiers.
+        if (RegExp(
+          r'\b(?:balance|bal|limit|outstanding|cashback\s+up\s+to|up\s*to|minimum|min)\b[^0-9;\n]{0,24}$',
+          caseSensitive: false,
+        ).hasMatch(prefix)) {
+          continue;
+        }
+        if (RegExp(
+          r'^\s*(?:is\s+)?(?:your\s+)?(?:available\s+)?(?:balance|limit)\b',
+          caseSensitive: false,
+        ).hasMatch(suffix)) {
+          continue;
+        }
+        var distance = 100000;
+        for (final action in actions) {
+          final gap = action.end <= match.start
+              ? match.start - action.end
+              : action.start >= match.end
+              ? action.start - match.end
+              : 0;
+          final between = action.end <= match.start
+              ? text.substring(action.end, match.start)
+              : action.start >= match.end
+              ? text.substring(match.end, action.start)
+              : '';
+          // Do not associate amounts across another balance/offer clause.
+          if (RegExp(r'[.!?;](?:\s|$)|\n').hasMatch(between)) continue;
+          if (RegExp(
+            r'\b(?:balance|bal|limit|up\s*to)\b',
+            caseSensitive: false,
+          ).hasMatch(between)) {
+            continue;
+          }
+          if (gap < distance) distance = gap;
+        }
+        if (distance <= 80) {
+          candidates.add((
+            amount: amount,
+            start: match.start,
+            end: match.end,
+            distance: distance,
+          ));
+        }
+      }
+    }
+    if (candidates.isEmpty) return null;
+    // Multiple distinct transaction values (fees, refunds, transfers, etc.) are
+    // not safe to collapse into one amount without an explicit format rule.
+    final amounts = candidates.map((c) => c.amount).toSet();
+    return amounts.length == 1 ? amounts.single : null;
   }
 
   static String? _extractMerchant(String sms) {
@@ -389,8 +538,14 @@ class SmsParserService {
     try {
       final db = DatabaseHelper();
       final entities = await db.queryAll('registered_entities');
+      entities.sort(
+        (a, b) => (b['keyword'] as String).length.compareTo(
+          (a['keyword'] as String).length,
+        ),
+      );
       for (final entity in entities) {
-        final keyword = (entity['keyword'] as String).toLowerCase();
+        final keyword = (entity['keyword'] as String).trim().toLowerCase();
+        if (keyword.isEmpty) continue;
         final keywordNoSpace = keyword.replaceAll(' ', '');
 
         if (combined.contains(keyword) ||

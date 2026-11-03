@@ -2,6 +2,8 @@
 *.class
 *.log
 *.pyc
+*.pyo
+__pycache__/
 *.swp
 .DS_Store
 .atom/
@@ -32,6 +34,30 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+/android/build/
+/android/app/build/
+/plugins/**/build/
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+
+# Regenerable local test runs, previews and model downloads
+/tmp/
+/output/
+/coverage/
+/test-results/
+/models/
+/model_downloads/
+/analyze_*.txt
+/final_analyze_results.txt
+/final_verification_results.txt
+/verification_*.txt
+
+# Installable build artifacts
+*.apk
+*.aab
+*.apks
+*.ipa
 
 # Symbolication related
 app.*.symbols
@@ -39,10 +65,10 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
-# Local Scratch / Testing scripts
-tmp_*.dart
-test_*.dart
-debug_*.dart
+# Root-level scratch scripts only; never hide source tests in test/ or tool/.
+/tmp_*.dart
+/test_*.dart
+/debug_*.dart
 
 # Android Studio will place build artifacts here
 /android/app/debug
@@ -52,8 +78,24 @@ debug_*.dart
 # Android signing keys
 *.jks
 *.p12
+*.pfx
+*.p8
 *.keystore
 key.properties
 local.properties
 
 google-services.json
+
+# Local environment secrets; keep distributable example files visible.
+.env
+.env.*
+!.env.example
+!.env.sample
+
+
+docs
+integration_test
+test
+tool
+
+PROJECT_REVIEW.md

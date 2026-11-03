@@ -43,6 +43,8 @@ class IncomingSmsReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
+        if (!context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                .getBoolean("flutter.sms_tracking_enabled", false)) return
         ContextHolder.applicationContext = context.applicationContext
         val smsList = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         val messagesGroupedByOriginatingAddress = smsList.groupBy { it.originatingAddress }
@@ -66,7 +68,7 @@ class IncomingSmsReceiver : BroadcastReceiver() {
         smsList.forEachIndexed { index, smsMessage ->
             if (index > 0) {
                 messageMap[MESSAGE_BODY] = (messageMap[MESSAGE_BODY] as String)
-                    .plus(smsMessage.messageBody.trim())
+                    .plus(smsMessage.messageBody)
             }
         }
         if (IncomingSmsHandler.isApplicationForeground(context)) {

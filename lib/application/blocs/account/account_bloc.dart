@@ -5,6 +5,8 @@ import 'account_event.dart';
 import 'account_state.dart';
 
 class AccountBloc extends Bloc<AccountEvent, AccountState> {
+  AccountLoaded? _lastLoaded;
+  int _loadRevision = 0;
   final AccountRepository _repository;
 
   AccountBloc(this._repository) : super(AccountInitial()) {
@@ -20,14 +22,32 @@ class AccountBloc extends Bloc<AccountEvent, AccountState> {
     LoadAccounts event,
     Emitter<AccountState> emit,
   ) async {
-    emit(AccountLoading());
+    final request = ++_loadRevision;
+    final previous = state is AccountLoaded
+        ? state as AccountLoaded
+        : _lastLoaded;
+    emit(
+      previous == null
+          ? AccountLoading()
+          : AccountLoaded(
+              accounts: previous.accounts,
+              selectedAccountId: previous.selectedAccountId,
+              totalBalance: previous.totalBalance,
+              refreshing: true,
+            ),
+    );
     try {
       final accounts = await _repository.getAll();
       final totalBalance = await _repository.getTotalBalance();
 
       final prefs = await SharedPreferences.getInstance();
-      final selectedId = prefs.getInt('selected_account_id');
+      var selectedId = prefs.getInt('selected_account_id');
+      if (selectedId != null && !accounts.any((a) => a.id == selectedId)) {
+        selectedId = null;
+        await prefs.remove('selected_account_id');
+      }
 
+      if (emit.isDone || request != _loadRevision) return;
       emit(
         AccountLoaded(
           accounts: accounts,
@@ -35,8 +55,20 @@ class AccountBloc extends Bloc<AccountEvent, AccountState> {
           totalBalance: totalBalance,
         ),
       );
+      if (state is AccountLoaded) _lastLoaded = state as AccountLoaded;
     } catch (e) {
-      emit(AccountError(e.toString()));
+      if (emit.isDone || request != _loadRevision) return;
+      emit(
+        previous == null
+            ? AccountError('Could not load accounts. Try again.')
+            : AccountLoaded(
+                accounts: previous.accounts,
+                selectedAccountId: previous.selectedAccountId,
+                totalBalance: previous.totalBalance,
+                refreshError:
+                    'Could not refresh. Your previous data is still shown.',
+              ),
+      );
     }
   }
 
@@ -67,11 +99,18 @@ class AccountBloc extends Bloc<AccountEvent, AccountState> {
     AddAccount event,
     Emitter<AccountState> emit,
   ) async {
+    var persisted = false;
     try {
       await _repository.save(event.account);
+      persisted = true;
       add(LoadAccounts());
     } catch (e) {
       emit(AccountError(e.toString()));
+    } finally {
+      final completion = event.completion;
+      if (completion != null && !completion.isCompleted) {
+        completion.complete(persisted);
+      }
     }
   }
 
@@ -79,11 +118,18 @@ class AccountBloc extends Bloc<AccountEvent, AccountState> {
     UpdateAccount event,
     Emitter<AccountState> emit,
   ) async {
+    var persisted = false;
     try {
       await _repository.save(event.account);
+      persisted = true;
       add(LoadAccounts());
     } catch (e) {
       emit(AccountError(e.toString()));
+    } finally {
+      final completion = event.completion;
+      if (completion != null && !completion.isCompleted) {
+        completion.complete(persisted);
+      }
     }
   }
 

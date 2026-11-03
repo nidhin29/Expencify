@@ -1,3 +1,9 @@
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../../application/services/notifications/notification_service.dart';
+import '../../widgets/tool_cards.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -29,7 +35,38 @@ class _RemindersScreenState extends State<RemindersScreen> {
   }
 
   Future<void> _load() async {
-    context.read<ReminderBloc>().add(LoadReminders());
+    final bloc = context.read<ReminderBloc>();
+    await waitForPageLoad(
+      bloc.stream,
+      (state) =>
+          state is ReminderError ||
+          (state is ReminderLoaded && !state.refreshing),
+      () => bloc.add(LoadReminders()),
+    );
+  }
+
+  Future<void> _markHandled(Reminder reminder) async {
+    final bloc = context.read<ReminderBloc>();
+    final completion = Completer<HandledReminder?>();
+    bloc.add(HandleReminder(reminder, completion: completion));
+    final result = await completion.future;
+    if (!mounted || result == null) return;
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        persist: false,
+        duration: const Duration(seconds: 6),
+        content: Text(
+          result.next == null
+              ? 'Reminder completed'
+              : 'Next reminder: ${DateFormat('d MMM').format(result.next!.dueDate)}',
+        ),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => bloc.add(UndoHandleReminder(result)),
+        ),
+      ),
+    );
   }
 
   Future<void> _showReminderModal({Reminder? existing}) async {
@@ -77,8 +114,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Close',
                         onPressed: () => Navigator.pop(ctx),
-                        icon: const Icon(Icons.close_rounded),
+                        icon: const Icon(AppIcons.close),
                       ),
                     ],
                   ),
@@ -106,11 +144,19 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     label: 'Due Date',
                     value: selectedDate,
                     onTap: () async {
-                      final d = await showDatePicker(
+                      final d = await showAppDatePicker(
+                        title: 'Payment due date',
                         context: ctx,
                         initialDate: selectedDate,
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime(2030),
+                        firstDate: selectedDate.isBefore(DateTime.now())
+                            ? DateUtils.dateOnly(selectedDate)
+                            : DateUtils.dateOnly(DateTime.now()),
+                        lastDate: DateTime(
+                          (selectedDate.year > DateTime.now().year
+                                  ? selectedDate.year
+                                  : DateTime.now().year) +
+                              10,
+                        ),
                       );
                       if (d != null) setS(() => selectedDate = d);
                     },
@@ -178,12 +224,21 @@ class _RemindersScreenState extends State<RemindersScreen> {
                           title: titleCtrl.text,
                           amount: double.parse(amountCtrl.text),
                           dueDate: selectedDate,
+                          recurrenceAnchor:
+                              existing?.dueDate == selectedDate &&
+                                  existing?.frequency == frequency
+                              ? existing?.recurrenceAnchor
+                              : null,
                           isRecurring: isRecurring,
                           frequency: frequency,
                         );
 
+                        await NotificationService().requestPermission(
+                          scheduled: true,
+                        );
+                        if (!mounted) return;
                         context.read<ReminderBloc>().add(SaveReminder(r));
-                        if (context.mounted) Navigator.pop(context);
+                        if (ctx.mounted) Navigator.pop(ctx);
                       },
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
@@ -285,7 +340,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
             child: Row(
               children: [
                 Icon(
-                  Icons.calendar_today_outlined,
+                  AppIcons.calendar,
                   size: 20,
                   color: theme.colorScheme.primary,
                 ),
@@ -327,7 +382,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
           onChanged: onChanged,
           decoration: InputDecoration(
             prefixIcon: Icon(
-              Icons.repeat_rounded,
+              AppIcons.recurring,
               size: 20,
               color: theme.colorScheme.primary,
             ),
@@ -360,208 +415,70 @@ class _RemindersScreenState extends State<RemindersScreen> {
               : Brightness.dark,
           statusBarBrightness: theme.brightness, // For iOS
         ),
-        title: const Text('Due Date Alerts'),
+        title: const Text('Reminders'),
         backgroundColor: Colors.transparent,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add_rounded),
-            onPressed: _showReminderModal,
+          BlocBuilder<ReminderBloc, ReminderState>(
+            builder: (context, state) =>
+                state is ReminderLoaded && state.reminders.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    tooltip: 'Add reminder',
+                    icon: const Icon(AppIcons.add),
+                    onPressed: _showReminderModal,
+                  ),
           ),
         ],
       ),
-      body: BlocBuilder<ReminderBloc, ReminderState>(
-        builder: (context, state) {
-          if (state is ReminderLoading) {
-            return const Center(child: CircularProgressIndicator());
-          } else if (state is ReminderLoaded) {
-            final reminders = state.reminders;
-            if (reminders.isEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text('🔔', style: const TextStyle(fontSize: 60)),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No reminders yet',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.4),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Never miss an EMI or bill!',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.3),
-                      ),
-                    ),
-                  ],
-                ),
+      body: RefreshFeedback<ReminderBloc, ReminderState>(
+        onRetry: _load,
+        child: BlocBuilder<ReminderBloc, ReminderState>(
+          builder: (context, state) {
+            if (state is ReminderLoading || state is ReminderInitial) {
+              return const PageLoading(
+                label: 'Loading reminder',
+                summary: false,
               );
-            }
-            return ListView.builder(
-              padding: const EdgeInsets.all(20),
-              itemCount: reminders.length,
-              itemBuilder: (ctx, i) {
-                final r = reminders[i];
-                return Dismissible(
-                  key: Key('reminder_${r.id}'),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    child: const Icon(
-                      Icons.delete_rounded,
-                      color: Colors.white,
-                    ),
-                  ),
-                  onDismissed: (_) async {
-                    context.read<ReminderBloc>().add(DeleteReminder(r.id!));
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surface,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: r.isOverdue
-                            ? Colors.red.withOpacity(0.4)
-                            : r.isDueSoon
-                            ? Colors.orange.withOpacity(0.4)
-                            : theme.colorScheme.onSurface.withOpacity(0.08),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
-                          blurRadius: 8,
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: r.isOverdue
-                                ? Colors.red.withOpacity(0.1)
-                                : r.isDueSoon
-                                ? Colors.orange.withOpacity(0.1)
-                                : const Color(0xFF6366F1).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Icon(
-                            Icons.alarm_rounded,
-                            color: r.isOverdue
-                                ? Colors.red
-                                : r.isDueSoon
-                                ? Colors.orange
-                                : const Color(0xFF6366F1),
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Text(
-                                    r.title,
-                                    style: theme.textTheme.titleMedium
-                                        ?.copyWith(fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  GestureDetector(
-                                    onTap: () =>
-                                        _showReminderModal(existing: r),
-                                    child: Icon(
-                                      Icons.edit_rounded,
-                                      size: 14,
-                                      color: theme.colorScheme.onSurface
-                                          .withOpacity(0.2),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Text(
-                                'Due: ${DateFormat('d MMM yyyy').format(r.dueDate)}',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: r.isOverdue
-                                      ? Colors.red
-                                      : theme.colorScheme.onSurface.withOpacity(
-                                          0.5,
-                                        ),
-                                ),
-                              ),
-                              if (r.isRecurring)
-                                Text(
-                                  'Recurring · ${r.frequency.capitalize()}',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurface
-                                        .withOpacity(0.4),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              _rupeeFmt.format(r.amount),
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            if (r.isOverdue)
-                              _badge('OVERDUE', Colors.red)
-                            else if (r.isDueSoon)
-                              _badge('DUE SOON', Colors.orange)
-                            else
-                              Text(
-                                '${r.daysUntilExpiry} days',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withOpacity(0.4),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+            } else if (state is ReminderLoaded) {
+              final reminders = state.reminders;
+              if (reminders.isEmpty) {
+                return ToolEmptyState(
+                  icon: AppIcons.reminder,
+                  title: 'No reminders yet',
+                  action: 'Add reminder',
+                  onAction: _showReminderModal,
                 );
-              },
-            );
-          } else if (state is ReminderError) {
-            return Center(child: Text(state.message));
-          }
-          return const SizedBox.shrink();
-        },
-      ),
-    );
-  }
-
-  Widget _badge(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.all(20),
+                itemCount: reminders.length,
+                itemBuilder: (ctx, i) {
+                  final r = reminders[i];
+                  return ToolCard(
+                    title: r.title,
+                    amount: _rupeeFmt.format(r.amount),
+                    detail:
+                        'Due ${DateFormat('d MMM yyyy').format(r.dueDate)}${r.isRecurring ? ' · ${r.frequency.capitalize()}' : ''}',
+                    icon: AppIcons.reminder,
+                    status: r.isOverdue
+                        ? 'Overdue'
+                        : r.isDueSoon
+                        ? 'Due soon'
+                        : null,
+                    urgent: r.isOverdue,
+                    onEdit: () => _showReminderModal(existing: r),
+                    onDelete: () =>
+                        context.read<ReminderBloc>().add(DeleteReminder(r.id!)),
+                    actionLabel: 'Done',
+                    onAction: () => _markHandled(r),
+                  );
+                },
+              );
+            } else if (state is ReminderError) {
+              return PageLoadFailure(onRetry: _load);
+            }
+            return const SizedBox.shrink();
+          },
         ),
       ),
     );

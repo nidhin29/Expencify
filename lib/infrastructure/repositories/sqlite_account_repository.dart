@@ -24,7 +24,29 @@ class SqliteAccountRepository implements AccountRepository {
 
   @override
   Future<void> delete(int id) async {
-    await _db.delete('accounts', id);
+    final db = await _db.database;
+    await db.transaction((txn) async {
+      for (final table in [
+        'transactions',
+        'budgets',
+        'goals',
+        'subscriptions',
+      ]) {
+        final rows = await txn.query(
+          table,
+          columns: ['id'],
+          where: 'account_id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          throw StateError(
+            'Remove or reassign this account’s transactions, budgets, goals and subscriptions first.',
+          );
+        }
+      }
+      await txn.delete('accounts', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   @override

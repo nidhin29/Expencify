@@ -1,3 +1,13 @@
+import '../../widgets/app_menu_item.dart';
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../widgets/sms_correction_sheet.dart';
+import 'dart:async';
+import '../settings/semantic_search_screen.dart';
+import '../../../application/services/search/semantic_search_service.dart';
+import '../settings/sms_review_screen.dart';
+import '../../../application/services/sms/sms_review_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
@@ -12,7 +22,6 @@ import 'package:expencify/application/blocs/transaction/transaction_state.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
 
-
 import 'package:expencify/presentation/screens/transactions/receipt_fullscreen.dart';
 import 'package:expencify/presentation/screens/transactions/transaction_entry_screen.dart';
 import 'package:expencify/presentation/screens/transactions/split_expense_sheet.dart';
@@ -20,7 +29,13 @@ import 'package:expencify/presentation/screens/transactions/split_expense_sheet.
 class TransactionListScreen extends StatefulWidget {
   final VoidCallback? onRefresh;
   final bool isActive;
-  const TransactionListScreen({super.key, this.onRefresh, this.isActive = false});
+  final SmsReviewStore? reviewStore;
+  const TransactionListScreen({
+    super.key,
+    this.onRefresh,
+    this.reviewStore,
+    this.isActive = false,
+  });
 
   @override
   State<TransactionListScreen> createState() => _TransactionListScreenState();
@@ -34,6 +49,10 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     decimalDigits: 0,
   );
 
+  Timer? _searchDebounce;
+  late Future<List<Map<String, Object?>>> _reviewFuture;
+  final _searchService = SemanticSearchService();
+  late bool _improvedSearchEnabled;
   String? _filterType;
   String? _filterCategory;
   DateTime? _filterDateFrom;
@@ -42,12 +61,25 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
 
   // Optimistic-deletion: track items removed but not yet committed (undo window)
   final Set<int> _removedIds = {};
-  
+
   @override
   void initState() {
     super.initState();
+    _reviewFuture = (widget.reviewStore ?? SmsReviewStore()).pending();
+    _improvedSearchEnabled = _searchService.enabled;
+    _searchService.addListener(_onSearchSettingsChanged);
+    unawaited(_searchService.activate().catchError((Object _) {}));
     _load();
-    _searchCtrl.addListener(() => _load());
+    _searchCtrl.addListener(() {
+      _searchDebounce?.cancel();
+      _searchDebounce = Timer(const Duration(milliseconds: 350), _load);
+    });
+  }
+
+  void _onSearchSettingsChanged() {
+    if (!mounted || _improvedSearchEnabled == _searchService.enabled) return;
+    setState(() => _improvedSearchEnabled = _searchService.enabled);
+    _load();
   }
 
   Future<void> _load() async {
@@ -59,14 +91,22 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       selectedId = accountState.selectedAccountId;
     }
 
-    context.read<TransactionBloc>().add(
-      LoadTransactions(
-        accountId: selectedId,
-        type: _filterType,
-        category: _filterCategory,
-        from: _filterDateFrom,
-        to: _filterDateTo,
-        search: _searchCtrl.text.trim(),
+    final bloc = context.read<TransactionBloc>();
+    await waitForPageLoad(
+      bloc.stream,
+      (state) =>
+          state is TransactionError ||
+          (state is TransactionLoaded && !state.refreshing),
+      () => bloc.add(
+        LoadTransactions(
+          accountId: selectedId,
+          type: _filterType,
+          category: _filterCategory,
+          from: _filterDateFrom,
+          to: _filterDateTo,
+          search: _searchCtrl.text.trim(),
+          semantic: _searchService.enabled,
+        ),
       ),
     );
   }
@@ -74,6 +114,10 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   Future<void> _deleteTransaction(TransactionModel t) async {
     if (t.id == null) return;
     final txBloc = context.read<TransactionBloc>();
+    final children = await context
+        .read<TransactionRepository>()
+        .getChildTransactions(t.id!);
+    if (!mounted) return;
 
     // 1. Optimistically hide the row immediately.
     setState(() => _removedIds.add(t.id!));
@@ -82,15 +126,20 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     txBloc.add(DeleteTransaction(t));
     widget.onRefresh?.call();
 
-    // 3. Show undo snackbar for 1.5 seconds.
+    // 3. Allow a readable Undo window; let ScaffoldMessenger own dismissal.
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
+        persist: false,
         content: Text(
-          'Deleted: ${t.merchant.isNotEmpty ? t.merchant : t.category}',
+          'Deleted: ${t.merchant.isNotEmpty
+              ? t.merchant
+              : t.note.isNotEmpty
+              ? t.note
+              : t.category}',
         ),
-        duration: const Duration(milliseconds: 1500),
+        duration: const Duration(seconds: 6),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -114,6 +163,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                   imagePath: t.imagePath,
                   parentId: t.parentId,
                 ),
+                splitChildren: children,
               ),
             );
             if (mounted) {
@@ -130,13 +180,6 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       ),
     );
 
-    // FORCE DISMISS TIMER (Bypasses system accessibility overrides)
-    Future.delayed(const Duration(milliseconds: 1800), () {
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      }
-    });
-
     // Clean up the optimistic-hide set after the snackbar window.
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) setState(() => _removedIds.remove(t.id));
@@ -146,6 +189,19 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    return BlocListener<TransactionBloc, TransactionState>(
+      listenWhen: (previous, current) =>
+          current is TransactionLoaded && previous != current,
+      listener: (_, state) {
+        setState(() {
+          _reviewFuture = (widget.reviewStore ?? SmsReviewStore()).pending();
+        });
+      },
+      child: _buildContent(theme),
+    );
+  }
+
+  Widget _buildContent(ThemeData theme) {
     return BlocListener<AccountBloc, AccountState>(
       listenWhen: (previous, current) {
         if (previous is AccountLoaded && current is AccountLoaded) {
@@ -159,12 +215,27 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       child: Scaffold(
         backgroundColor: theme.colorScheme.surface,
         appBar: AppBar(
-          title: const Text('Passbook'),
+          title: const Text('Transactions'),
           automaticallyImplyLeading: false,
           backgroundColor: Colors.transparent,
           actions: [
             IconButton(
-              icon: const Icon(Icons.filter_list_rounded),
+              tooltip: 'SMS to review',
+              icon: const Icon(Icons.fact_check_outlined),
+              onPressed: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SmsReviewScreen()),
+                );
+                if (mounted) {
+                  setState(() {});
+                  _load();
+                }
+              },
+            ),
+            IconButton(
+              tooltip: 'Filter transactions',
+              icon: const Icon(AppIcons.filter),
               onPressed: _showFilterSheet,
             ),
           ],
@@ -175,14 +246,52 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: TextField(
                 controller: _searchCtrl,
+                maxLength: 600,
                 style: theme.textTheme.bodyMedium,
                 decoration: InputDecoration(
-                  hintText: 'Search...',
+                  hintText: 'Search transactions…',
+                  counterText: '',
+                  suffixIcon: PopupMenuButton<String>(
+                    clipBehavior: Clip.antiAlias,
+                    tooltip: 'Search options',
+                    icon: Icon(
+                      Icons.tune_rounded,
+                      color: _improvedSearchEnabled
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+                    itemBuilder: (_) => [
+                      if (_searchService.enabled &&
+                          (_searchService.indexing ||
+                              _searchService.error != null))
+                        AppMenuItem<String>(
+                          enabled: false,
+                          label: _searchService.error ?? 'Improving search…',
+                          icon: AppIcons.search,
+                        ),
+                      AppMenuItem(
+                        value: 'improve',
+                        label: _searchService.enabled
+                            ? 'Manage improved search'
+                            : 'Improve search',
+                        icon: AppIcons.search,
+                      ),
+                    ],
+                    onSelected: (_) async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SemanticSearchScreen(),
+                        ),
+                      );
+                      if (mounted) _load();
+                    },
+                  ),
                   hintStyle: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                   prefixIcon: Icon(
-                    Icons.search_rounded,
+                    AppIcons.search,
                     size: 20,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -197,6 +306,33 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                   ),
                 ),
               ),
+            ),
+            FutureBuilder<List<Map<String, Object?>>>(
+              future: _reviewFuture,
+              builder: (context, snapshot) {
+                final count = snapshot.data?.length ?? 0;
+                if (count == 0) return const SizedBox.shrink();
+                return ListTile(
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: Text('$count SMS to review'),
+                  trailing: const Icon(AppIcons.chevron),
+                  onTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const SmsReviewScreen(),
+                      ),
+                    );
+                    if (mounted) {
+                      setState(() {
+                        _reviewFuture = (widget.reviewStore ?? SmsReviewStore())
+                            .pending();
+                      });
+                      _load();
+                    }
+                  },
+                );
+              },
             ),
             if (_filterType != null ||
                 _filterCategory != null ||
@@ -260,37 +396,41 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                 ),
               ),
             Expanded(
-              child: BlocBuilder<TransactionBloc, TransactionState>(
-                builder: (context, state) {
-                  if (state is TransactionLoading) {
-                    return const Center(child: CircularProgressIndicator());
-                  } else if (state is TransactionLoaded) {
-                    if (state.transactions.isEmpty) {
-                      return _buildEmpty(theme);
-                    }
-                    return RefreshIndicator(
-                      onRefresh: _load,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
+              child: RefreshFeedback<TransactionBloc, TransactionState>(
+                onRetry: _load,
+                child: BlocBuilder<TransactionBloc, TransactionState>(
+                  builder: (context, state) {
+                    if (state is TransactionLoading ||
+                        state is TransactionInitial) {
+                      return const PageLoading(label: 'Loading transactions');
+                    } else if (state is TransactionLoaded) {
+                      if (state.transactions.isEmpty) {
+                        return _buildEmpty(theme);
+                      }
+                      return RefreshIndicator(
+                        onRefresh: _load,
+                        child: ListView.builder(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          itemCount: state.transactions.length,
+                          itemBuilder: (ctx, i) {
+                            final t = state.transactions[i];
+                            // Skip optimistically removed items without rebuilding
+                            if (_removedIds.contains(t.id)) {
+                              return const SizedBox.shrink();
+                            }
+                            return _buildItem(theme, t);
+                          },
                         ),
-                        itemCount: state.transactions.length,
-                        itemBuilder: (ctx, i) {
-                          final t = state.transactions[i];
-                          // Skip optimistically removed items without rebuilding
-                          if (_removedIds.contains(t.id)) {
-                            return const SizedBox.shrink();
-                          }
-                          return _buildItem(theme, t);
-                        },
-                      ),
-                    );
-                  } else if (state is TransactionError) {
-                    return Center(child: Text(state.message));
-                  }
-                  return _buildEmpty(theme);
-                },
+                      );
+                    } else if (state is TransactionError) {
+                      return Center(child: Text(state.message));
+                    }
+                    return _buildEmpty(theme);
+                  },
+                ),
               ),
             ),
           ],
@@ -327,7 +467,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
             ),
             const SizedBox(width: 6),
             Icon(
-              Icons.close_rounded,
+              AppIcons.close,
               size: 12,
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -359,7 +499,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
         ),
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+        child: const Icon(AppIcons.delete, color: Colors.white),
       ),
       background: Container(
         margin: const EdgeInsets.symmetric(vertical: 2),
@@ -385,6 +525,11 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       ),
       child: InkWell(
         onTap: () async {
+          if (t.isSms) {
+            await showSmsCorrection(context, t);
+            if (mounted) _load();
+            return;
+          }
           await Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => TransactionEntryScreen(existing: t),
@@ -413,13 +558,17 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      t.merchant.isNotEmpty ? t.merchant : t.category,
+                      t.merchant.isNotEmpty
+                          ? t.merchant
+                          : t.note.isNotEmpty
+                          ? t.note
+                          : t.category,
                       style: theme.textTheme.titleSmall,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${t.category} \u00B7 ${DateFormat('d MMM yyyy').format(t.date)}',
+                      '${t.merchant.isEmpty && t.note.isEmpty ? '' : '${t.category} · '}${DateFormat('d MMM yyyy').format(t.date)}',
                       style: theme.textTheme.bodySmall,
                     ),
                   ],
@@ -433,12 +582,15 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                     children: [
                       if (isExpense)
                         IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
+                          tooltip: 'Split expense',
+                          constraints: const BoxConstraints(
+                            minWidth: 48,
+                            minHeight: 48,
+                          ),
                           icon: Icon(
                             Icons.call_split_rounded,
-                            size: 14,
-                            color: color.withOpacity(0.5),
+                            size: 20,
+                            color: color,
                           ),
                           onPressed: () => _showSplitSheet(t),
                         ),
@@ -449,12 +601,6 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
                           color: color,
                           fontWeight: FontWeight.w700,
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Icon(
-                        Icons.edit_rounded,
-                        size: 14,
-                        color: theme.colorScheme.onSurface.withOpacity(0.2),
                       ),
                     ],
                   ),
@@ -514,7 +660,10 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   void _showSplitSheet(TransactionModel t) {
     if (t.type != 'expense') {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Only expenses can be distributed.')),
+        const SnackBar(
+          persist: false,
+          content: Text('Only expenses can be distributed.'),
+        ),
       );
       return;
     }
@@ -546,7 +695,10 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
           context.read<TransactionBloc>().add(SplitTransactions(t, parts));
           Navigator.pop(ctx);
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Expense distributed successfully!')),
+            const SnackBar(
+              persist: false,
+              content: Text('Expense split saved'),
+            ),
           );
         },
       ),
@@ -559,7 +711,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.receipt_long_rounded,
+            AppIcons.transactions,
             size: 64,
             color: theme.colorScheme.primary.withOpacity(0.2),
           ),
@@ -701,7 +853,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       from = DateTime(now.year, 1, 1);
       to = DateTime(now.year, 12, 31, 23, 59, 59);
     } else if (period == 'Custom Range') {
-      final picked = await showDateRangePicker(
+      final picked = await showAppDateRangePicker(
         context: context,
         firstDate: DateTime(2000),
         lastDate: DateTime(2100),
@@ -736,6 +888,8 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
 
   @override
   void dispose() {
+    _searchService.removeListener(_onSearchSettingsChanged);
+    _searchDebounce?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -744,293 +898,4 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
 extension StringCapitalize on String {
   String capitalize() =>
       isEmpty ? '' : '${this[0].toUpperCase()}${substring(1)}';
-}
-
-/// Displays the split children of a parent transaction inline.
-/// Self-hides when the parent has no children.
-class _SplitChildrenView extends StatefulWidget {
-  final int parentId;
-  final NumberFormat rupeeFmt;
-  final ThemeData theme;
-  const _SplitChildrenView({
-    required this.parentId,
-    required this.rupeeFmt,
-    required this.theme,
-  });
-  @override
-  State<_SplitChildrenView> createState() => _SplitChildrenViewState();
-}
-
-class _SplitChildrenViewState extends State<_SplitChildrenView> {
-  late Future<List<TransactionModel>> _childrenFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _reload();
-  }
-
-  void _reload() {
-    _childrenFuture = context
-        .read<TransactionRepository>()
-        .getChildTransactions(widget.parentId);
-  }
-
-  /// Simple bottom sheet: edit just the label (note) and amount.
-  Future<void> _editSplitChild(TransactionModel child) async {
-    final nameCtrl = TextEditingController(
-      text: child.note.isNotEmpty ? child.note : child.merchant,
-    );
-    final amountCtrl = TextEditingController(
-      text: child.amount.toStringAsFixed(0),
-    );
-
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(ctx).viewInsets.bottom,
-          ),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(24),
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    margin: const EdgeInsets.only(bottom: 20),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurface.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                Text(
-                  'Edit Split Part',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: nameCtrl,
-                  autofocus: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    hintText: 'e.g. Lunch with team',
-                    prefixIcon: Icon(Icons.label_outline_rounded),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: const InputDecoration(
-                    labelText: 'Amount',
-                    prefixText: '\u20B9 ',
-                    prefixIcon: Icon(Icons.currency_rupee_rounded),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('Save'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-
-    if (saved == true && mounted) {
-      final newNote = nameCtrl.text.trim();
-      final newAmount = double.tryParse(amountCtrl.text.trim()) ?? child.amount;
-      final txBloc = context.read<TransactionBloc>();
-      final newChild = child.copyWith(
-        note: newNote,
-        merchant: newNote,
-        amount: newAmount,
-      );
-      txBloc.add(UpdateTransaction(newChild, child));
-      setState(() => _reload());
-    }
-    nameCtrl.dispose();
-    amountCtrl.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<TransactionModel>>(
-      future: _childrenFuture,
-      builder: (context, snap) {
-        if (!snap.hasData || snap.data!.isEmpty) return const SizedBox.shrink();
-        final children = snap.data!;
-        final theme = widget.theme;
-        final dark = theme.brightness == Brightness.dark;
-
-        return Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-          decoration: BoxDecoration(
-            color: dark
-                ? AppTheme.darkElevated.withOpacity(0.8)
-                : AppTheme.lightElevated.withOpacity(0.9),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: AppTheme.expense.withOpacity(0.18),
-              width: 1,
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.call_split_rounded,
-                      size: 13,
-                      color: AppTheme.expense.withOpacity(0.75),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Split \u00B7 ${children.length} parts',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: AppTheme.expense.withOpacity(0.85),
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Divider(
-                height: 1,
-                thickness: 0.5,
-                color: AppTheme.expense.withOpacity(0.1),
-              ),
-              // Rows — show note as label, amount on right, tap to edit
-              ...children.asMap().entries.map((e) {
-                final idx = e.key;
-                final child = e.value;
-                final isLast = idx == children.length - 1;
-                // Label: note field (what user typed), fallback to merchant/category
-                final label = child.note.isNotEmpty
-                    ? child.note
-                    : (child.merchant.isNotEmpty
-                          ? child.merchant
-                          : child.category);
-
-                return Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: isLast
-                        ? const BorderRadius.only(
-                            bottomLeft: Radius.circular(10),
-                            bottomRight: Radius.circular(10),
-                          )
-                        : BorderRadius.zero,
-                    onTap: () => _editSplitChild(child),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 10,
-                      ),
-                      decoration: !isLast
-                          ? BoxDecoration(
-                              border: Border(
-                                bottom: BorderSide(
-                                  color: dark
-                                      ? AppTheme.darkBorder
-                                      : AppTheme.lightBorder,
-                                  width: 0.5,
-                                ),
-                              ),
-                            )
-                          : null,
-                      child: Row(
-                        children: [
-                          // Numbered bubble
-                          Container(
-                            width: 22,
-                            height: 22,
-                            decoration: BoxDecoration(
-                              color: AppTheme.expense.withOpacity(0.1),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Center(
-                              child: Text(
-                                '${idx + 1}',
-                                style: TextStyle(
-                                  color: AppTheme.expense,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          // Label
-                          Expanded(
-                            child: Text(
-                              label,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          // Amount + edit hint
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                '-${widget.rupeeFmt.format(child.amount)}',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: AppTheme.expense,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Icon(
-                                Icons.edit_outlined,
-                                size: 12,
-                                color: theme.colorScheme.onSurface.withOpacity(
-                                  0.25,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              }),
-            ],
-          ),
-        );
-      },
-    );
-  }
 }

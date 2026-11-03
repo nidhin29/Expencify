@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/budget.dart';
 
@@ -18,7 +19,8 @@ class LoadBudgets extends BudgetEvent {
 
 class SaveBudget extends BudgetEvent {
   final Budget budget;
-  const SaveBudget(this.budget);
+  final Completer<bool>? completion;
+  const SaveBudget(this.budget, {this.completion});
 
   @override
   List<Object?> get props => [budget];

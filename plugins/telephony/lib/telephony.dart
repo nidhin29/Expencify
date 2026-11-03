@@ -9,26 +9,29 @@ part 'constants.dart';
 
 part 'filter.dart';
 
-typedef MessageHandler(SmsMessage message);
-typedef SmsSendStatusListener(SendStatus status);
+typedef MessageHandler = Function(SmsMessage message);
+typedef SmsSendStatusListener = Function(SendStatus status);
 
-void _flutterSmsSetupBackgroundChannel(
-    {MethodChannel backgroundChannel =
-        const MethodChannel(_BACKGROUND_CHANNEL)}) async {
+void _flutterSmsSetupBackgroundChannel({
+  MethodChannel backgroundChannel = const MethodChannel(_BACKGROUND_CHANNEL),
+}) async {
   WidgetsFlutterBinding.ensureInitialized();
 
   backgroundChannel.setMethodCallHandler((call) async {
     if (call.method == HANDLE_BACKGROUND_MESSAGE) {
-      final CallbackHandle handle =
-          CallbackHandle.fromRawHandle(call.arguments['handle']);
-      final Function handlerFunction =
-          PluginUtilities.getCallbackFromHandle(handle)!;
+      final CallbackHandle handle = CallbackHandle.fromRawHandle(
+        call.arguments['handle'],
+      );
+      final Function handlerFunction = PluginUtilities.getCallbackFromHandle(
+        handle,
+      )!;
       try {
-        await handlerFunction(SmsMessage.fromMap(
-            call.arguments['message'], INCOMING_SMS_COLUMNS));
+        await handlerFunction(
+          SmsMessage.fromMap(call.arguments['message'], INCOMING_SMS_COLUMNS),
+        );
       } catch (e) {
-        print('Unable to handle incoming background message.');
-        print(e);
+        debugPrint('Unable to handle incoming background message.');
+        debugPrint(e.toString());
       }
       return Future<void>.value();
     }
@@ -69,19 +72,23 @@ class Telephony {
   /// ## Do not call this method. This method is visible only for testing.
   @visibleForTesting
   Telephony.private(MethodChannel methodChannel, Platform platform)
-      : _foregroundChannel = methodChannel,
-        _platform = platform;
+    : _foregroundChannel = methodChannel,
+      _platform = platform;
 
   Telephony._newInstance(MethodChannel methodChannel, LocalPlatform platform)
-      : _foregroundChannel = methodChannel,
-        _platform = platform {
+    : _foregroundChannel = methodChannel,
+      _platform = platform {
     _foregroundChannel.setMethodCallHandler(handler);
   }
 
   static final Telephony _instance = Telephony._newInstance(
-      const MethodChannel(_FOREGROUND_CHANNEL), const LocalPlatform());
+    const MethodChannel(_FOREGROUND_CHANNEL),
+    const LocalPlatform(),
+  );
   static final Telephony _backgroundInstance = Telephony._newInstance(
-      const MethodChannel(_FOREGROUND_CHANNEL), const LocalPlatform());
+    const MethodChannel(_FOREGROUND_CHANNEL),
+    const LocalPlatform(),
+  );
 
   ///
   /// Listens to incoming SMS.
@@ -96,18 +103,20 @@ class Telephony {
   /// ignored if [onBackgroundMessage] is not set.
   ///
   ///
-  void listenIncomingSms(
-      {required MessageHandler onNewMessage,
-      MessageHandler? onBackgroundMessage,
-      bool listenInBackground = true}) {
+  void listenIncomingSms({
+    required MessageHandler onNewMessage,
+    MessageHandler? onBackgroundMessage,
+    bool listenInBackground = true,
+  }) {
     assert(_platform.isAndroid == true, "Can only be called on Android.");
     assert(
-        listenInBackground
-            ? onBackgroundMessage != null
-            : onBackgroundMessage == null,
-        listenInBackground
-            ? "`onBackgroundMessage` cannot be null when `listenInBackground` is true. Set `listenInBackground` to false if you don't need background processing."
-            : "You have set `listenInBackground` to false. `onBackgroundMessage` can only be set when `listenInBackground` is true");
+      listenInBackground
+          ? onBackgroundMessage != null
+          : onBackgroundMessage == null,
+      listenInBackground
+          ? "`onBackgroundMessage` cannot be null when `listenInBackground` is true. Set `listenInBackground` to false if you don't need background processing."
+          : "You have set `listenInBackground` to false. `onBackgroundMessage` can only be set when `listenInBackground` is true",
+    );
 
     _onNewMessage = onNewMessage;
 
@@ -126,13 +135,11 @@ class Telephony {
         );
       }
 
-      _foregroundChannel.invokeMethod<bool>(
-        'startBackgroundService',
-        <String, dynamic>{
-          'setupHandle': backgroundSetupHandle.toRawHandle(),
-          'backgroundHandle': backgroundMessageHandle.toRawHandle()
-        },
-      );
+      _foregroundChannel
+          .invokeMethod<bool>('startBackgroundService', <String, dynamic>{
+            'setupHandle': backgroundSetupHandle.toRawHandle(),
+            'backgroundHandle': backgroundMessageHandle.toRawHandle(),
+          });
     } else {
       _foregroundChannel.invokeMethod('disableBackgroundService');
     }
@@ -166,15 +173,18 @@ class Telephony {
   /// Returns:
   ///
   /// [Future<List<SmsMessage>>]
-  Future<List<SmsMessage>> getInboxSms(
-      {List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
-      SmsFilter? filter,
-      List<OrderBy>? sortOrder}) async {
+  Future<List<SmsMessage>> getInboxSms({
+    List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
+    SmsFilter? filter,
+    List<OrderBy>? sortOrder,
+  }) async {
     assert(_platform.isAndroid == true, "Can only be called on Android.");
     final args = _getArguments(columns, filter, sortOrder);
 
-    final messages =
-        await _foregroundChannel.invokeMethod<List?>(GET_ALL_INBOX_SMS, args);
+    final messages = await _foregroundChannel.invokeMethod<List?>(
+      GET_ALL_INBOX_SMS,
+      args,
+    );
 
     return messages
             ?.map((message) => SmsMessage.fromMap(message, columns))
@@ -196,15 +206,18 @@ class Telephony {
   /// Returns:
   ///
   /// [Future<List<SmsMessage>>]
-  Future<List<SmsMessage>> getSentSms(
-      {List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
-      SmsFilter? filter,
-      List<OrderBy>? sortOrder}) async {
+  Future<List<SmsMessage>> getSentSms({
+    List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
+    SmsFilter? filter,
+    List<OrderBy>? sortOrder,
+  }) async {
     assert(_platform.isAndroid == true, "Can only be called on Android.");
     final args = _getArguments(columns, filter, sortOrder);
 
-    final messages =
-        await _foregroundChannel.invokeMethod<List?>(GET_ALL_SENT_SMS, args);
+    final messages = await _foregroundChannel.invokeMethod<List?>(
+      GET_ALL_SENT_SMS,
+      args,
+    );
 
     return messages
             ?.map((message) => SmsMessage.fromMap(message, columns))
@@ -226,15 +239,18 @@ class Telephony {
   /// Returns:
   ///
   /// [Future<List<SmsMessage>>]
-  Future<List<SmsMessage>> getDraftSms(
-      {List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
-      SmsFilter? filter,
-      List<OrderBy>? sortOrder}) async {
+  Future<List<SmsMessage>> getDraftSms({
+    List<SmsColumn> columns = DEFAULT_SMS_COLUMNS,
+    SmsFilter? filter,
+    List<OrderBy>? sortOrder,
+  }) async {
     assert(_platform.isAndroid == true, "Can only be called on Android.");
     final args = _getArguments(columns, filter, sortOrder);
 
-    final messages =
-        await _foregroundChannel.invokeMethod<List?>(GET_ALL_DRAFT_SMS, args);
+    final messages = await _foregroundChannel.invokeMethod<List?>(
+      GET_ALL_DRAFT_SMS,
+      args,
+    );
 
     return messages
             ?.map((message) => SmsMessage.fromMap(message, columns))
@@ -255,13 +271,17 @@ class Telephony {
   /// Returns:
   ///
   /// [Future<List<SmsConversation>>]
-  Future<List<SmsConversation>> getConversations(
-      {ConversationFilter? filter, List<OrderBy>? sortOrder}) async {
+  Future<List<SmsConversation>> getConversations({
+    ConversationFilter? filter,
+    List<OrderBy>? sortOrder,
+  }) async {
     assert(_platform.isAndroid == true, "Can only be called on Android.");
     final args = _getArguments(DEFAULT_CONVERSATION_COLUMNS, filter, sortOrder);
 
     final conversations = await _foregroundChannel.invokeMethod<List?>(
-        GET_ALL_CONVERSATIONS, args);
+      GET_ALL_CONVERSATIONS,
+      args,
+    );
 
     return conversations
             ?.map((conversation) => SmsConversation.fromMap(conversation))
@@ -269,8 +289,11 @@ class Telephony {
         List.empty();
   }
 
-  Map<String, dynamic> _getArguments(List<_TelephonyColumn> columns,
-      Filter? filter, List<OrderBy>? sortOrder) {
+  Map<String, dynamic> _getArguments(
+    List<TelephonyColumn> columns,
+    Filter? filter,
+    List<OrderBy>? sortOrder,
+  ) {
     final Map<String, dynamic> args = {};
 
     args["projection"] = columns.map((c) => c._name).toList();
@@ -315,7 +338,7 @@ class Telephony {
     final Map<String, dynamic> args = {
       "address": to,
       "message_body": message,
-      "listen_status": listenStatus
+      "listen_status": listenStatus,
     };
     final String method = isMultipart ? SEND_MULTIPART_SMS : SEND_SMS;
     await _foregroundChannel.invokeMethod(method, args);
@@ -335,10 +358,7 @@ class Telephony {
     required String to,
     required String message,
   }) async {
-    final Map<String, dynamic> args = {
-      "address": to,
-      "message_body": message,
-    };
+    final Map<String, dynamic> args = {"address": to, "message_body": message};
     await _foregroundChannel.invokeMethod(SEND_SMS_INTENT, args);
   }
 
@@ -357,8 +377,9 @@ class Telephony {
   ///
   /// [Future<DataState>]
   Future<DataState> get cellularDataState async {
-    final int? dataState =
-        await _foregroundChannel.invokeMethod<int>(GET_CELLULAR_DATA_STATE);
+    final int? dataState = await _foregroundChannel.invokeMethod<int>(
+      GET_CELLULAR_DATA_STATE,
+    );
     if (dataState == null || dataState == -1) {
       return DataState.UNKNOWN;
     } else {
@@ -373,8 +394,9 @@ class Telephony {
   ///
   /// [Future<CallState>]
   Future<CallState> get callState async {
-    final int? state =
-        await _foregroundChannel.invokeMethod<int>(GET_CALL_STATE);
+    final int? state = await _foregroundChannel.invokeMethod<int>(
+      GET_CALL_STATE,
+    );
     if (state != null) {
       return CallState.values[state];
     } else {
@@ -389,8 +411,9 @@ class Telephony {
   ///
   /// [Future<CallState>]
   Future<DataActivity> get dataActivity async {
-    final int? activity =
-        await _foregroundChannel.invokeMethod<int>(GET_DATA_ACTIVITY);
+    final int? activity = await _foregroundChannel.invokeMethod<int>(
+      GET_DATA_ACTIVITY,
+    );
     if (activity != null) {
       return DataActivity.values[activity];
     } else {
@@ -424,8 +447,9 @@ class Telephony {
   /// ### Requires READ_PHONE_STATE permission.
   ///
   Future<NetworkType> get dataNetworkType async {
-    final int? type =
-        await _foregroundChannel.invokeMethod<int>(GET_DATA_NETWORK_TYPE);
+    final int? type = await _foregroundChannel.invokeMethod<int>(
+      GET_DATA_NETWORK_TYPE,
+    );
     if (type != null) {
       return NetworkType.values[type];
     } else {
@@ -437,8 +461,9 @@ class Telephony {
   /// Returns a constant indicating the device phone type. This indicates the type of radio used to transmit voice calls.
   ///
   Future<PhoneType> get phoneType async {
-    final int? type =
-        await _foregroundChannel.invokeMethod<int>(GET_PHONE_TYPE);
+    final int? type = await _foregroundChannel.invokeMethod<int>(
+      GET_PHONE_TYPE,
+    );
     if (type != null) {
       return PhoneType.values[type];
     } else {
@@ -467,8 +492,9 @@ class Telephony {
   ///
   /// [Future<SimState>]
   Future<SimState> get simState async {
-    final int? state =
-        await _foregroundChannel.invokeMethod<int>(GET_SIM_STATE);
+    final int? state = await _foregroundChannel.invokeMethod<int>(
+      GET_SIM_STATE,
+    );
     if (state != null) {
       return SimState.values[state];
     } else {
@@ -492,8 +518,9 @@ class Telephony {
   ///
   /// [Future<List<SignalStrength>>]
   Future<List<SignalStrength>> get signalStrengths async {
-    final List<dynamic>? strengths =
-        await _foregroundChannel.invokeMethod(GET_SIGNAL_STRENGTH);
+    final List<dynamic>? strengths = await _foregroundChannel.invokeMethod(
+      GET_SIGNAL_STRENGTH,
+    );
     return (strengths ?? [])
         .map((s) => SignalStrength.values[s])
         .toList(growable: false);
@@ -509,8 +536,9 @@ class Telephony {
   ///
   /// [Future<ServiceState>]
   Future<ServiceState> get serviceState async {
-    final int? state =
-        await _foregroundChannel.invokeMethod<int>(GET_SERVICE_STATE);
+    final int? state = await _foregroundChannel.invokeMethod<int>(
+      GET_SERVICE_STATE,
+    );
     if (state != null) {
       return ServiceState.values[state];
     } else {
@@ -584,62 +612,61 @@ class SmsMessage {
       final value = message[column._columnName];
       switch (column._columnName) {
         case _SmsProjections.ID:
-          this.id = int.tryParse(value);
+          id = int.tryParse(value);
           break;
         case _SmsProjections.ORIGINATING_ADDRESS:
         case _SmsProjections.ADDRESS:
-          this.address = value;
+          address = value;
           break;
         case _SmsProjections.MESSAGE_BODY:
         case _SmsProjections.BODY:
-          this.body = value;
+          body = value;
           break;
         case _SmsProjections.DATE:
         case _SmsProjections.TIMESTAMP:
-          this.date = int.tryParse(value);
+          date = int.tryParse(value);
           break;
         case _SmsProjections.DATE_SENT:
-          this.dateSent = int.tryParse(value);
+          dateSent = int.tryParse(value);
           break;
         case _SmsProjections.READ:
-          this.read = int.tryParse(value) == 0 ? false : true;
+          read = int.tryParse(value) == 0 ? false : true;
           break;
         case _SmsProjections.SEEN:
-          this.seen = int.tryParse(value) == 0 ? false : true;
+          seen = int.tryParse(value) == 0 ? false : true;
           break;
         case _SmsProjections.STATUS:
           switch (int.tryParse(value)) {
             case 0:
-              this.status = SmsStatus.STATUS_COMPLETE;
+              status = SmsStatus.STATUS_COMPLETE;
               break;
             case 32:
-              this.status = SmsStatus.STATUS_PENDING;
+              status = SmsStatus.STATUS_PENDING;
               break;
             case 64:
-              this.status = SmsStatus.STATUS_FAILED;
+              status = SmsStatus.STATUS_FAILED;
               break;
             case -1:
             default:
-              this.status = SmsStatus.STATUS_NONE;
+              status = SmsStatus.STATUS_NONE;
               break;
           }
           break;
         case _SmsProjections.SUBJECT:
-          this.subject = value;
+          subject = value;
           break;
         case _SmsProjections.SUBSCRIPTION_ID:
-          this.subscriptionId = int.tryParse(value);
+          subscriptionId = int.tryParse(value);
           break;
         case _SmsProjections.THREAD_ID:
-          this.threadId = int.tryParse(value);
+          threadId = int.tryParse(value);
           break;
         case _SmsProjections.TYPE:
           var smsTypeIndex = int.tryParse(value);
-          this.type =
-              smsTypeIndex != null ? SmsType.values[smsTypeIndex] : null;
+          type = smsTypeIndex != null ? SmsType.values[smsTypeIndex] : null;
           break;
         case _SmsProjections.SERVICE_CENTER_ADDRESS:
-          this.serviceCenterAddress = value;
+          serviceCenterAddress = value;
           break;
       }
     }
@@ -648,18 +675,18 @@ class SmsMessage {
   /// ## Do not call this method. This method is visible only for testing.
   @visibleForTesting
   bool equals(SmsMessage other) {
-    return this.id == other.id &&
-        this.address == other.address &&
-        this.body == other.body &&
-        this.date == other.date &&
-        this.dateSent == other.dateSent &&
-        this.read == other.read &&
-        this.seen == other.seen &&
-        this.subject == other.subject &&
-        this.subscriptionId == other.subscriptionId &&
-        this.threadId == other.threadId &&
-        this.type == other.type &&
-        this.status == other.status;
+    return id == other.id &&
+        address == other.address &&
+        body == other.body &&
+        date == other.date &&
+        dateSent == other.dateSent &&
+        read == other.read &&
+        seen == other.seen &&
+        subject == other.subject &&
+        subscriptionId == other.subscriptionId &&
+        threadId == other.threadId &&
+        type == other.type &&
+        status == other.status;
   }
 }
 
@@ -674,19 +701,20 @@ class SmsConversation {
   /// ## Do not call this method. This method is visible only for testing.
   @visibleForTesting
   SmsConversation.fromMap(Map rawConversation) {
-    final conversation =
-        Map.castFrom<dynamic, dynamic, String, dynamic>(rawConversation);
+    final conversation = Map.castFrom<dynamic, dynamic, String, dynamic>(
+      rawConversation,
+    );
     for (var column in DEFAULT_CONVERSATION_COLUMNS) {
       final String? value = conversation[column._columnName];
       switch (column._columnName) {
         case _ConversationProjections.SNIPPET:
-          this.snippet = value;
+          snippet = value;
           break;
         case _ConversationProjections.THREAD_ID:
-          this.threadId = int.tryParse(value!);
+          threadId = int.tryParse(value!);
           break;
         case _ConversationProjections.MSG_COUNT:
-          this.messageCount = int.tryParse(value!);
+          messageCount = int.tryParse(value!);
           break;
       }
     }
@@ -695,8 +723,8 @@ class SmsConversation {
   /// ## Do not call this method. This method is visible only for testing.
   @visibleForTesting
   bool equals(SmsConversation other) {
-    return this.threadId == other.threadId &&
-        this.snippet == other.snippet &&
-        this.messageCount == other.messageCount;
+    return threadId == other.threadId &&
+        snippet == other.snippet &&
+        messageCount == other.messageCount;
   }
 }

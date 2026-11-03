@@ -1,3 +1,8 @@
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../../application/services/notifications/notification_service.dart';
+import '../../widgets/tool_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -29,7 +34,14 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
   }
 
   Future<void> _load() async {
-    context.read<ApplianceBloc>().add(LoadAppliances());
+    final bloc = context.read<ApplianceBloc>();
+    await waitForPageLoad(
+      bloc.stream,
+      (state) =>
+          state is ApplianceError ||
+          (state is ApplianceLoaded && !state.refreshing),
+      () => bloc.add(LoadAppliances()),
+    );
   }
 
   Future<void> _showApplianceModal({Appliance? existing}) async {
@@ -80,8 +92,9 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Close',
                         onPressed: () => Navigator.pop(ctx),
-                        icon: const Icon(Icons.close_rounded),
+                        icon: const Icon(AppIcons.close),
                       ),
                     ],
                   ),
@@ -90,7 +103,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
                     label: 'Appliance Name',
                     controller: nameCtrl,
                     hint: 'e.g. Living Room AC',
-                    icon: Icons.devices_other_outlined,
+                    icon: AppIcons.appliances,
                     validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null,
                   ),
                   const SizedBox(height: 16),
@@ -117,8 +130,9 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
                           value: purchaseDate,
                           icon: Icons.shopping_bag_outlined,
                           onTap: () async {
-                            final d = await showDatePicker(
+                            final d = await showAppDatePicker(
                               context: ctx,
+                              title: 'Purchase date',
                               initialDate: purchaseDate,
                               firstDate: DateTime(2000),
                               lastDate: DateTime.now(),
@@ -134,8 +148,9 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
                           value: amcDate,
                           icon: Icons.event_available_outlined,
                           onTap: () async {
-                            final d = await showDatePicker(
+                            final d = await showAppDatePicker(
                               context: ctx,
+                              title: 'AMC expiry date',
                               initialDate: amcDate,
                               firstDate: DateTime.now(),
                               lastDate: DateTime(2035),
@@ -160,11 +175,11 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
                           amcExpiryDate: amcDate,
                           amcAmount: double.tryParse(amcAmtCtrl.text) ?? 0,
                         );
-                        if (existing != null) {
-                          context.read<ApplianceBloc>().add(SaveAppliance(a));
-                        } else {
-                          context.read<ApplianceBloc>().add(SaveAppliance(a));
-                        }
+                        await NotificationService().requestPermission(
+                          scheduled: true,
+                        );
+                        if (!mounted) return;
+                        context.read<ApplianceBloc>().add(SaveAppliance(a));
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
                       style: ElevatedButton.styleFrom(
@@ -297,200 +312,85 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
               : Brightness.dark,
           statusBarBrightness: theme.brightness, // For iOS
         ),
-        title: const Text('Appliances Tracker'),
+        title: const Text('Appliances'),
         backgroundColor: Colors.transparent,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add_rounded),
-            onPressed: () => _showApplianceModal(),
+          BlocBuilder<ApplianceBloc, ApplianceState>(
+            builder: (context, state) =>
+                state is ApplianceLoaded && state.appliances.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    tooltip: 'Add appliance',
+                    icon: const Icon(AppIcons.add),
+                    onPressed: () => _showApplianceModal(),
+                  ),
           ),
         ],
       ),
-      body: BlocBuilder<ApplianceBloc, ApplianceState>(
-        builder: (context, state) {
-          if (state is ApplianceLoading) {
-            return const Center(child: CircularProgressIndicator());
-          } else if (state is ApplianceLoaded) {
-            final appliances = state.appliances;
-            if (appliances.isEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text('🏠', style: TextStyle(fontSize: 60)),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No appliances yet',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.4),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Track AMC renewals for your appliances',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.3),
-                      ),
-                    ),
-                  ],
-                ),
+      body: RefreshFeedback<ApplianceBloc, ApplianceState>(
+        onRetry: _load,
+        child: BlocBuilder<ApplianceBloc, ApplianceState>(
+          builder: (context, state) {
+            if (state is ApplianceLoading || state is ApplianceInitial) {
+              return const PageLoading(
+                label: 'Loading appliance',
+                summary: false,
               );
-            }
-            return ListView.builder(
-              padding: const EdgeInsets.all(20),
-              itemCount: appliances.length,
-              itemBuilder: (ctx, i) {
-                final a = appliances[i];
-                return Dismissible(
-                  key: Key('appliance_${a.id}'),
-                  direction: DismissDirection.endToStart,
-                  background: Container(
-                    margin: const EdgeInsets.only(bottom: 14),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    child: const Icon(
-                      Icons.delete_rounded,
-                      color: Colors.white,
-                    ),
-                  ),
-                  onDismissed: (_) async {
-                    context.read<ApplianceBloc>().add(DeleteAppliance(a.id!));
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 14),
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surface,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: a.isExpired
-                            ? Colors.red.withOpacity(0.4)
-                            : a.isDueSoon
-                            ? Colors.orange.withOpacity(0.4)
-                            : theme.colorScheme.onSurface.withOpacity(0.08),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
-                          blurRadius: 8,
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: a.isExpired
-                                ? Colors.red.withOpacity(0.1)
-                                : a.isDueSoon
-                                ? Colors.orange.withOpacity(0.1)
-                                : Colors.teal.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Icon(
-                            Icons.devices_other_rounded,
-                            color: a.isExpired
-                                ? Colors.red
-                                : a.isDueSoon
-                                ? Colors.orange
-                                : Colors.teal,
-                            size: 28,
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                a.name,
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              if (a.brand.isNotEmpty)
-                                Text(
-                                  a.brand,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurface
-                                        .withOpacity(0.5),
-                                  ),
-                                ),
-                              Text(
-                                'AMC: ${DateFormat('d MMM yyyy').format(a.amcExpiryDate)}',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: a.isExpired
-                                      ? Colors.red
-                                      : theme.colorScheme.onSurface.withOpacity(
-                                          0.5,
-                                        ),
-                                ),
-                              ),
-                              if (a.amcAmount > 0)
-                                Text(
-                                  'Renewal: ${_rupeeFmt.format(a.amcAmount)}',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurface
-                                        .withOpacity(0.4),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.edit_rounded, size: 18),
-                              onPressed: () => _showApplianceModal(existing: a),
-                            ),
-                            if (a.isExpired)
-                              _badge('EXPIRED', Colors.red)
-                            else if (a.isDueSoon)
-                              _badge('DUE SOON', Colors.orange)
-                            else
-                              Text(
-                                '${a.daysUntilExpiry}d',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withOpacity(0.4),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+            } else if (state is ApplianceLoaded) {
+              final appliances = state.appliances;
+              if (appliances.isEmpty) {
+                return ToolEmptyState(
+                  icon: AppIcons.appliances,
+                  title: 'Keep your appliances covered',
+                  action: 'Add appliance',
+                  onAction: () => _showApplianceModal(),
                 );
-              },
-            );
-          } else if (state is ApplianceError) {
-            return Center(child: Text(state.message));
-          }
-          return const SizedBox.shrink();
-        },
-      ),
-    );
-  }
-
-  Widget _badge(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.all(20),
+                itemCount: appliances.length,
+                itemBuilder: (ctx, i) {
+                  final a = appliances[i];
+                  return Dismissible(
+                    key: Key('appliance_${a.id}'),
+                    direction: DismissDirection.endToStart,
+                    background: Container(
+                      margin: const EdgeInsets.only(bottom: 14),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      child: const Icon(AppIcons.delete, color: Colors.white),
+                    ),
+                    onDismissed: (_) async {
+                      context.read<ApplianceBloc>().add(DeleteAppliance(a.id!));
+                    },
+                    child: ToolCard(
+                      title: a.name,
+                      amount: a.amcAmount > 0
+                          ? _rupeeFmt.format(a.amcAmount)
+                          : 'AMC renewal',
+                      detail:
+                          '${a.brand.isNotEmpty ? '${a.brand} · ' : ''}${DateFormat('d MMM yyyy').format(a.amcExpiryDate)}',
+                      icon: AppIcons.appliances,
+                      status: a.isExpired
+                          ? 'Expired'
+                          : a.isDueSoon
+                          ? 'Renewing soon'
+                          : 'Covered',
+                      urgent: a.isExpired,
+                      onEdit: () => _showApplianceModal(existing: a),
+                    ),
+                  );
+                },
+              );
+            } else if (state is ApplianceError) {
+              return PageLoadFailure(onRetry: _load);
+            }
+            return const SizedBox.shrink();
+          },
         ),
       ),
     );

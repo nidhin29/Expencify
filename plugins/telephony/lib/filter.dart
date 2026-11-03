@@ -27,6 +27,7 @@ class SmsFilter implements Filter<SmsFilterStatement, SmsColumn> {
       SmsFilterStatement._(column._columnName);
 
   /// Joins two filter statements by the AND operator.
+  @override
   SmsFilterStatement and(SmsColumn column) {
     return _addCombineOperator(column, " AND");
   }
@@ -38,8 +39,11 @@ class SmsFilter implements Filter<SmsFilterStatement, SmsColumn> {
   }
 
   SmsFilterStatement _addCombineOperator(SmsColumn column, String operator) {
-    return SmsFilterStatement._withPreviousFilter("$_filter $operator",
-        column._name, List.from(_filterArgs, growable: true));
+    return SmsFilterStatement._withPreviousFilter(
+      "$_filter $operator",
+      column._name,
+      List.from(_filterArgs, growable: true),
+    );
   }
 
   /// ## Do not call this method. This method is visible only for testing.
@@ -76,9 +80,14 @@ class ConversationFilter
   }
 
   ConversationFilterStatement _addCombineOperator(
-      ConversationColumn column, String operator) {
-    return ConversationFilterStatement._withPreviousFilter("$_filter $operator",
-        column._name, List.from(_filterArgs, growable: true));
+    ConversationColumn column,
+    String operator,
+  ) {
+    return ConversationFilterStatement._withPreviousFilter(
+      "$_filter $operator",
+      column._name,
+      List.from(_filterArgs, growable: true),
+    );
   }
 
   @override
@@ -89,17 +98,19 @@ class ConversationFilter
 }
 
 abstract class FilterStatement<T extends Filter, K> {
-  String _column;
+  final String _column;
   String _previousFilter = "";
   List<String> _previousFilterArgs = [];
 
   FilterStatement._(this._column);
 
   FilterStatement._withPreviousFilter(
-      String previousFilter, String column, List<String> previousFilterArgs)
-      : _previousFilter = previousFilter,
-        _column = column,
-        _previousFilterArgs = previousFilterArgs;
+    String previousFilter,
+    String column,
+    List<String> previousFilterArgs,
+  ) : _previousFilter = previousFilter,
+      _column = column,
+      _previousFilterArgs = previousFilterArgs;
 
   /// Checks equality between the column value and [equalTo] value
   T equals(String equalTo) {
@@ -159,36 +170,44 @@ abstract class FilterStatement<T extends Filter, K> {
 
 class SmsFilterStatement
     extends FilterStatement<SmsFilter, SmsFilterStatement> {
-  SmsFilterStatement._(String column) : super._(column);
+  SmsFilterStatement._(super.column) : super._();
 
   SmsFilterStatement._withPreviousFilter(
-      String previousFilter, String column, List<String> previousFilterArgs)
-      : super._withPreviousFilter(previousFilter, column, previousFilterArgs);
+    super.previousFilter,
+    super.column,
+    super.previousFilterArgs,
+  ) : super._withPreviousFilter();
 
   @override
   SmsFilter _createFilter(String value, String operator) {
-    return SmsFilter._("$_previousFilter $_column $operator ?",
-        _previousFilterArgs..add(value));
+    return SmsFilter._(
+      "$_previousFilter $_column $operator ?",
+      _previousFilterArgs..add(value),
+    );
   }
 }
 
 class ConversationFilterStatement
     extends FilterStatement<ConversationFilter, ConversationFilterStatement> {
-  ConversationFilterStatement._(String column) : super._(column);
+  ConversationFilterStatement._(super.column) : super._();
 
   ConversationFilterStatement._withPreviousFilter(
-      String previousFilter, String column, List<String> previousFilterArgs)
-      : super._withPreviousFilter(previousFilter, column, previousFilterArgs);
+    super.previousFilter,
+    super.column,
+    super.previousFilterArgs,
+  ) : super._withPreviousFilter();
 
   @override
   ConversationFilter _createFilter(String value, String operator) {
-    return ConversationFilter._("$_previousFilter $_column $operator ?",
-        _previousFilterArgs..add(value));
+    return ConversationFilter._(
+      "$_previousFilter $_column $operator ?",
+      _previousFilterArgs..add(value),
+    );
   }
 }
 
 class OrderBy {
-  final _TelephonyColumn _column;
+  final TelephonyColumn _column;
   Sort _sort = Sort.DESC;
 
   /// Orders the query results by the provided column and [sort] value.

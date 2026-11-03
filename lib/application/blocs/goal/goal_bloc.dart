@@ -4,6 +4,8 @@ import 'goal_event.dart';
 import 'goal_state.dart';
 
 class GoalBloc extends Bloc<GoalEvent, GoalState> {
+  GoalLoaded? _lastLoaded;
+  int _loadRevision = 0;
   final GoalRepository _repository;
 
   GoalBloc(this._repository) : super(GoalInitial()) {
@@ -14,21 +16,45 @@ class GoalBloc extends Bloc<GoalEvent, GoalState> {
   }
 
   Future<void> _onLoadGoals(LoadGoals event, Emitter<GoalState> emit) async {
-    emit(GoalLoading());
+    final request = ++_loadRevision;
+    final previous = state is GoalLoaded ? state as GoalLoaded : _lastLoaded;
+    emit(
+      previous == null
+          ? GoalLoading()
+          : GoalLoaded(previous.goals, refreshing: true),
+    );
     try {
       final goals = await _repository.getAll();
+      if (emit.isDone || request != _loadRevision) return;
       emit(GoalLoaded(goals));
+      if (state is GoalLoaded) _lastLoaded = state as GoalLoaded;
     } catch (e) {
-      emit(GoalError(e.toString()));
+      if (emit.isDone || request != _loadRevision) return;
+      emit(
+        previous == null
+            ? GoalError('Could not load goals. Try again.')
+            : GoalLoaded(
+                previous.goals,
+                refreshError:
+                    'Could not refresh. Your previous data is still shown.',
+              ),
+      );
     }
   }
 
   Future<void> _onSaveGoal(SaveGoal event, Emitter<GoalState> emit) async {
+    var persisted = false;
     try {
       await _repository.save(event.goal);
+      persisted = true;
       add(LoadGoals());
     } catch (e) {
       emit(GoalError(e.toString()));
+    } finally {
+      final completion = event.completion;
+      if (completion != null && !completion.isCompleted) {
+        completion.complete(persisted);
+      }
     }
   }
 
@@ -45,11 +71,18 @@ class GoalBloc extends Bloc<GoalEvent, GoalState> {
     AddGoalContribution event,
     Emitter<GoalState> emit,
   ) async {
+    var persisted = false;
     try {
       await _repository.addContribution(event.goalId, event.amount);
+      persisted = true;
       add(LoadGoals());
     } catch (e) {
       emit(GoalError(e.toString()));
+    } finally {
+      final completion = event.completion;
+      if (completion != null && !completion.isCompleted) {
+        completion.complete(persisted);
+      }
     }
   }
 }

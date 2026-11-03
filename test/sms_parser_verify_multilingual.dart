@@ -1,7 +1,8 @@
+import 'dart:io';
 import 'package:expencify/application/services/sms/sms_parser_service.dart';
 
 void main() async {
-  print("--- Testing Precision Multilingual Parser ---");
+  stdout.writeln("--- Testing Precision Multilingual Parser ---");
 
   final testCases = [
     {
@@ -45,14 +46,14 @@ void main() async {
     final actual = result?['type'];
 
     if (actual == test['expected']) {
-      print("[PASS] ${test['name']}");
+      stdout.writeln("[PASS] ${test['name']}");
       passed++;
     } else {
-      print(
+      stdout.writeln(
         "[FAIL] ${test['name']} - Expected: ${test['expected']}, Actual: $actual",
       );
     }
   }
 
-  print("\nResults: $passed/${testCases.length} tests passed.");
+  stdout.writeln("\nResults: $passed/${testCases.length} tests passed.");
 }

@@ -1,3 +1,12 @@
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../widgets/goal_contribution_sheet.dart';
+import '../../../application/services/goals/goal_progress.dart';
+import '../../../domain/repositories/goal_repository.dart';
+import 'dart:async';
+import '../../widgets/form_save_button.dart';
+import '../../widgets/tool_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -36,7 +45,13 @@ class _GoalsScreenState extends State<GoalsScreen> {
     if (accountState is AccountLoaded) {
       _lastAccountId = accountState.selectedAccountId;
     }
-    context.read<GoalBloc>().add(LoadGoals());
+    final bloc = context.read<GoalBloc>();
+    await waitForPageLoad(
+      bloc.stream,
+      (state) =>
+          state is GoalError || (state is GoalLoaded && !state.refreshing),
+      () => bloc.add(LoadGoals()),
+    );
     if (mounted) setState(() {});
   }
 
@@ -44,7 +59,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
     final formKey = GlobalKey<FormState>();
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
     final amountCtrl = TextEditingController(
-      text: existing?.targetAmount.toStringAsFixed(0) ?? '',
+      text: existing?.targetAmount.toStringAsFixed(2) ?? '',
     );
     DateTime selectedDate =
         existing?.targetDate ?? DateTime.now().add(const Duration(days: 30));
@@ -105,8 +120,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Close',
                         onPressed: () => Navigator.pop(ctx),
-                        icon: const Icon(Icons.close_rounded),
+                        icon: const Icon(AppIcons.close),
                       ),
                     ],
                   ),
@@ -116,7 +132,8 @@ class _GoalsScreenState extends State<GoalsScreen> {
                     controller: nameCtrl,
                     hint: 'e.g. New iPhone',
                     icon: Icons.flag_outlined,
-                    validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null,
+                    validator: (v) =>
+                        (v?.trim().isEmpty ?? true) ? 'Enter a name' : null,
                   ),
                   const SizedBox(height: 16),
                   StatefulBuilder(
@@ -129,7 +146,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
                       return _buildDropdown(
                         label: 'Account (Optional)',
                         value: selectedAccountId?.toString(),
-                        icon: Icons.account_balance_wallet_outlined,
+                        icon: AppIcons.accounts,
                         items: [
                           const DropdownMenuItem(
                             value: null,
@@ -157,20 +174,26 @@ class _GoalsScreenState extends State<GoalsScreen> {
                     hint: '0.00',
                     icon: Icons.track_changes_outlined,
                     keyboardType: TextInputType.number,
-                    validator: (v) => (v == null || double.tryParse(v) == null)
-                        ? 'Invalid'
-                        : null,
+                    validator: (v) {
+                      final value = double.tryParse(v ?? '');
+                      return value == null || !value.isFinite || value <= 0
+                          ? 'Enter an amount greater than zero'
+                          : null;
+                    },
                   ),
                   const SizedBox(height: 16),
                   _buildDatePicker(
                     label: 'Target Date',
                     value: selectedDate,
                     onTap: () async {
-                      final d = await showDatePicker(
+                      final d = await showAppDatePicker(
+                        title: 'Target date',
                         context: ctx,
                         initialDate: selectedDate,
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime(2030),
+                        firstDate: selectedDate.isBefore(DateTime.now())
+                            ? DateUtils.dateOnly(selectedDate)
+                            : DateUtils.dateOnly(DateTime.now()),
+                        lastDate: DateTime(2100),
                       );
                       if (d != null) setS(() => selectedDate = d);
                     },
@@ -226,20 +249,24 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        if (!formKey.currentState!.validate()) return;
+                    child: FormSaveButton(
+                      onSaved: () => Navigator.pop(ctx),
+                      onSave: () async {
+                        if (!formKey.currentState!.validate()) return null;
                         final g = Goal(
                           id: existing?.id,
-                          name: nameCtrl.text,
+                          name: nameCtrl.text.trim(),
                           targetAmount: double.parse(amountCtrl.text),
                           targetDate: selectedDate,
                           icon: selectedIcon,
                           savedAmount: existing?.savedAmount ?? 0,
                           accountId: selectedAccountId,
                         );
-                        context.read<GoalBloc>().add(SaveGoal(g));
-                        if (ctx.mounted) Navigator.pop(ctx);
+                        final completion = Completer<bool>();
+                        context.read<GoalBloc>().add(
+                          SaveGoal(g, completion: completion),
+                        );
+                        return completion.future;
                       },
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
@@ -266,77 +293,52 @@ class _GoalsScreenState extends State<GoalsScreen> {
   }
 
   Future<void> _showContributionModal(Goal goal) async {
-    final ctrl = TextEditingController();
-    showModalBottomSheet(
+    final bloc = context.read<GoalBloc>();
+    final repository = context.read<GoalRepository>();
+    final result = await showModalBottomSheet<Goal>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        decoration: BoxDecoration(
-          color: Theme.of(ctx).colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          top: 20,
-          left: 20,
-          right: 20,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Add to ${goal.name}',
-                    style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              _buildField(
-                label: 'Contribution Amount (₹)',
-                controller: ctrl,
-                hint: '0.00',
-                icon: Icons.add_circle_outline_rounded,
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final amount = double.tryParse(ctrl.text);
-                    if (amount == null || amount <= 0) return;
-                    context.read<GoalBloc>().add(
-                      AddGoalContribution(goal.id!, amount),
-                    );
-                    if (ctx.mounted) Navigator.pop(ctx);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  child: const Text(
-                    'Add Contribution',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
-                ),
-              ),
-            ],
-          ),
+      useSafeArea: true,
+      isDismissible: false,
+      enableDrag: false,
+      builder: (_) => GoalContributionSheet(
+        goal: goal,
+        onSave: (amount) async {
+          final completion = Completer<bool>();
+          bloc.add(
+            AddGoalContribution(goal.id!, amount, completion: completion),
+          );
+          if (!await completion.future) {
+            throw StateError('Contribution failed.');
+          }
+          try {
+            return (await repository.getAll()).firstWhere(
+              (g) => g.id == goal.id,
+            );
+          } catch (_) {
+            return goal.copyWith(
+              savedAmount: goal.savedAmount + (amount * 100).round() / 100,
+            );
+          }
+        },
+      ),
+    );
+    if (!mounted || result == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        persist: false,
+        duration: const Duration(seconds: 4),
+        content: Row(
+          children: [
+            Icon(
+              result.isCompleted
+                  ? Icons.emoji_events_outlined
+                  : AppIcons.success,
+              color: Theme.of(context).colorScheme.inversePrimary,
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text(goalProgressMessage(goal, result))),
+          ],
         ),
       ),
     );
@@ -416,7 +418,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
           validator: validator,
           decoration: InputDecoration(
             prefixIcon: Icon(
-              icon ?? Icons.category_outlined,
+              icon ?? AppIcons.categories,
               size: 20,
               color: theme.colorScheme.primary,
             ),
@@ -466,7 +468,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
             child: Row(
               children: [
                 Icon(
-                  Icons.calendar_today_outlined,
+                  AppIcons.calendar,
                   size: 20,
                   color: theme.colorScheme.primary,
                 ),
@@ -486,15 +488,15 @@ class _GoalsScreenState extends State<GoalsScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final icon2emoji = {
-      'savings': '💰',
-      'flight': '✈️',
-      'directions_car': '🚗',
-      'school': '📚',
-      'phone_android': '📱',
-      'home': '🏠',
-      'local_hospital': '🏥',
-      'beach_access': '🏖️',
+    const goalIcons = {
+      'savings': AppIcons.goals,
+      'flight': Icons.flight_outlined,
+      'directions_car': Icons.directions_car_outlined,
+      'school': Icons.school_outlined,
+      'phone_android': Icons.phone_android_outlined,
+      'home': AppIcons.home,
+      'local_hospital': Icons.local_hospital_outlined,
+      'beach_access': Icons.beach_access_outlined,
     };
 
     return BlocListener<AccountBloc, AccountState>(
@@ -516,232 +518,134 @@ class _GoalsScreenState extends State<GoalsScreen> {
           title: const Text('Savings Goals'),
           backgroundColor: Colors.transparent,
           actions: [
-            IconButton(
-              icon: const Icon(Icons.add_rounded),
-              onPressed: _showGoalModal,
+            BlocBuilder<GoalBloc, GoalState>(
+              builder: (context, state) =>
+                  state is GoalLoaded &&
+                      state.goals
+                          .where(
+                            (g) =>
+                                _lastAccountId == null ||
+                                g.accountId == null ||
+                                g.accountId == _lastAccountId,
+                          )
+                          .isEmpty
+                  ? const SizedBox.shrink()
+                  : IconButton(
+                      tooltip: 'Create savings goal',
+                      icon: const Icon(AppIcons.add),
+                      onPressed: _showGoalModal,
+                    ),
             ),
           ],
         ),
-        body: BlocBuilder<GoalBloc, GoalState>(
-          builder: (context, state) {
-            if (state is GoalLoading) {
-              return const Center(child: CircularProgressIndicator());
-            } else if (state is GoalLoaded) {
-              final goals = state.goals;
-              final showAll = _lastAccountId == null;
-              final visibleGoals = goals.where((g) {
-                return showAll ||
-                    g.accountId == null ||
-                    g.accountId == _lastAccountId;
-              }).toList();
+        body: RefreshFeedback<GoalBloc, GoalState>(
+          onRetry: _load,
+          child: BlocBuilder<GoalBloc, GoalState>(
+            builder: (context, state) {
+              if (state is GoalLoading || state is GoalInitial) {
+                return const PageLoading(label: 'Loading goal', summary: false);
+              } else if (state is GoalLoaded) {
+                final goals = state.goals;
+                final showAll = _lastAccountId == null;
+                final visibleGoals = goals.where((g) {
+                  return showAll ||
+                      g.accountId == null ||
+                      g.accountId == _lastAccountId;
+                }).toList();
 
-              if (visibleGoals.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text('💰', style: TextStyle(fontSize: 64)),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No goals yet',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          color: theme.colorScheme.onSurface.withOpacity(0.4),
+                if (visibleGoals.isEmpty) {
+                  return ToolEmptyState(
+                    icon: AppIcons.goals,
+                    title: 'Your next goal starts here',
+                    action: 'Create savings goal',
+                    onAction: _showGoalModal,
+                  );
+                }
+                return RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(20),
+                    itemCount: visibleGoals.length + 1,
+                    itemBuilder: (ctx, i) {
+                      if (i == 0) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 20),
+                          child: Text(
+                            '${visibleGoals.where((g) => !g.isCompleted).length} active · ${visibleGoals.where((g) => g.isCompleted).length} reached',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        );
+                      }
+                      final g = visibleGoals[i - 1];
+                      return Dismissible(
+                        key: Key('goal_${g.id}'),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 20),
+                          child: const Icon(
+                            AppIcons.delete,
+                            color: Colors.white,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Tap + to start saving for your dreams!',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurface.withOpacity(0.3),
+                        confirmDismiss: (_) async =>
+                            await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('Delete Goal?'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    child: const Text(
+                                      'Delete',
+                                      style: TextStyle(color: Colors.red),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ) ??
+                            false,
+                        onDismissed: (_) async {
+                          context.read<GoalBloc>().add(DeleteGoal(g.id!));
+                        },
+                        child: ToolCard(
+                          title: g.name,
+                          amount: _rupeeFmt.format(g.savedAmount),
+                          detail:
+                              'of ${_rupeeFmt.format(g.targetAmount)} · ${DateFormat('d MMM yyyy').format(g.targetDate)}',
+                          icon: g.isCompleted
+                              ? Icons.emoji_events_outlined
+                              : goalIcons[g.icon] ?? AppIcons.goals,
+                          status: g.isCompleted ? 'Goal reached' : null,
+                          progress: g.progress,
+                          progressLabel: g.isCompleted
+                              ? '100% complete'
+                              : '${(g.progress * 100).floor()}% · ${_rupeeFmt.format(g.targetAmount - g.savedAmount)} left',
+                          onEdit: () => _showGoalModal(existing: g),
+                          actionLabel: 'Add savings',
+                          onAction: g.isCompleted
+                              ? null
+                              : () => _showContributionModal(g),
                         ),
-                      ),
-                    ],
+                      );
+                    },
                   ),
                 );
+              } else if (state is GoalError) {
+                return PageLoadFailure(onRetry: _load);
               }
-              return RefreshIndicator(
-                onRefresh: _load,
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(20),
-                  itemCount: visibleGoals.length,
-                  itemBuilder: (ctx, i) {
-                    final g = visibleGoals[i];
-                    final emoji = icon2emoji[g.icon] ?? '💰';
-                    return Dismissible(
-                      key: Key('goal_${g.id}'),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: Colors.red,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 20),
-                        child: const Icon(
-                          Icons.delete_rounded,
-                          color: Colors.white,
-                        ),
-                      ),
-                      confirmDismiss: (_) async =>
-                          await showDialog<bool>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('Delete Goal?'),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, false),
-                                  child: const Text('Cancel'),
-                                ),
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, true),
-                                  child: const Text(
-                                    'Delete',
-                                    style: TextStyle(color: Colors.red),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ) ??
-                          false,
-                      onDismissed: (_) async {
-                        context.read<GoalBloc>().add(DeleteGoal(g.id!));
-                      },
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surface,
-                          borderRadius: BorderRadius.circular(24),
-                          border: Border.all(
-                            color: g.isCompleted
-                                ? Colors.green.withOpacity(0.4)
-                                : theme.colorScheme.onSurface.withOpacity(0.08),
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.04),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 80,
-                              height: 80,
-                              decoration: BoxDecoration(
-                                color: Color(g.color).withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    emoji,
-                                    style: const TextStyle(fontSize: 30),
-                                  ),
-                                  Text(
-                                    '${(g.progress * 100).toStringAsFixed(0)}%',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(g.color),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Row(
-                                          children: [
-                                            Text(
-                                              g.name,
-                                              style: theme.textTheme.titleMedium
-                                                  ?.copyWith(
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            GestureDetector(
-                                              onTap: () =>
-                                                  _showGoalModal(existing: g),
-                                              child: Icon(
-                                                Icons.edit_rounded,
-                                                size: 14,
-                                                color: theme
-                                                    .colorScheme
-                                                    .onSurface
-                                                    .withOpacity(0.2),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      if (g.isCompleted)
-                                        const Text(
-                                          '✅',
-                                          style: TextStyle(fontSize: 16),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${_rupeeFmt.format(g.savedAmount)} of ${_rupeeFmt.format(g.targetAmount)}',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurface
-                                          .withOpacity(0.6),
-                                    ),
-                                  ),
-                                  Text(
-                                    'By ${DateFormat('d MMM yyyy').format(g.targetDate)}',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurface
-                                          .withOpacity(0.4),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: LinearProgressIndicator(
-                                      value: g.progress,
-                                      backgroundColor: Color(
-                                        g.color,
-                                      ).withOpacity(0.1),
-                                      color: Color(g.color),
-                                      minHeight: 6,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            if (!g.isCompleted)
-                              IconButton(
-                                icon: const Icon(Icons.add_circle_rounded),
-                                color: Color(g.color),
-                                onPressed: () => _showContributionModal(g),
-                              ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              );
-            } else if (state is GoalError) {
-              return Center(child: Text(state.message));
-            }
-            return const SizedBox.shrink();
-          },
+              return const SizedBox.shrink();
+            },
+          ),
         ),
       ),
     );

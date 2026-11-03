@@ -31,7 +31,17 @@
 # Keep everything in our package just in case
 -keep class com.example.expencify.** { *; }
 
+# SQLCipher JNI bindings (sqflite_sqlcipher 3.x / sqlcipher-android).
+-keep class net.zetetic.database.sqlcipher.** { *; }
+-keep class net.sqlcipher.** { *; }
+
 # Telephony plugin (SMS Monitoring)
 -keep class com.shounakmulay.telephony.** { *; }
 -keep interface com.shounakmulay.telephony.** { *; }
 -dontwarn com.shounakmulay.telephony.**
+
+# ONNX Runtime JNI used by optional local semantic search.
+-keep class ai.onnxruntime.** { *; }
+
+# LiteRT-LM JNI entry points used by the offline Qwen3 adapter.
+-keep class com.google.ai.edge.litertlm.** { *; }

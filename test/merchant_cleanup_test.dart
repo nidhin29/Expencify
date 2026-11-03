@@ -36,7 +36,7 @@ void main() {
     });
 
     test('Should handle newline before "On"', () async {
-      final sms = "Paid to DAILY FRESH SUPERMARKET\nOn 26. Bal: 100";
+      final sms = "Paid Rs. 50 to DAILY FRESH SUPERMARKET\nOn 26. Bal: 100";
       final result = await SmsParserService.parseSms(sms);
 
       expect(result, isNotNull);
@@ -44,7 +44,7 @@ void main() {
     });
 
     test('Should handle "On" followed by full date', () async {
-      final sms = "Paid to JOBY JAYAKUMAR On 26-FEB-2026. Txn: 1";
+      final sms = "Paid Rs. 50 to JOBY JAYAKUMAR On 26-FEB-2026. Txn: 1";
       final result = await SmsParserService.parseSms(sms);
 
       expect(result, isNotNull);

@@ -1,12 +1,10 @@
-import 'dart:io';
+import 'backup_restore_exception.dart';
+import 'backup_progress.dart';
+import 'dart:typed_data';
+import 'backup_snapshot.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
-import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
-import 'package:flutter/foundation.dart';
-import '../security/encryption_service.dart';
-import 'package:expencify/infrastructure/database/database_helper.dart';
 
 class GoogleDriveService {
   static final GoogleDriveService _instance = GoogleDriveService._();
@@ -14,9 +12,7 @@ class GoogleDriveService {
   GoogleDriveService._();
 
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: [
-      drive.DriveApi.driveAppdataScope,
-    ],
+    scopes: [drive.DriveApi.driveAppdataScope],
   );
 
   GoogleSignInAccount? _currentUser;
@@ -26,8 +22,7 @@ class GoogleDriveService {
       _currentUser = await _googleSignIn.signIn();
       return _currentUser != null ? null : 'Sign-in was cancelled or failed.';
     } catch (e) {
-      debugPrint('Google Drive Sign-In Error: $e');
-      return 'Sign-In Error: $e';
+      return 'Could not sign in to Google Drive. Please try again.';
     }
   }
 
@@ -36,26 +31,27 @@ class GoogleDriveService {
     _currentUser = null;
   }
 
-  Future<String?> backupDatabase(String password) async {
+  Future<String?> backupDatabase(
+    String password, {
+    BackupProgressCallback? onProgress,
+  }) async {
     if (_currentUser == null) {
       final error = await signIn();
       if (error != null) return error;
     }
 
+    _GoogleAuthClient? authenticateClient;
     try {
       final authHeaders = await _currentUser!.authHeaders;
-      final authenticateClient = _GoogleAuthClient(authHeaders);
+      authenticateClient = _GoogleAuthClient(authHeaders);
       final driveApi = drive.DriveApi(authenticateClient);
 
-      // 1. Get local database path
-      String dbPath = join(await getDatabasesPath(), 'expencify.db');
-      final dbFile = File(dbPath);
-      if (!await dbFile.exists()) return 'Local database file not found.';
+      final encryptedBytes = await BackupSnapshot().create(
+        password,
+        onProgress: onProgress,
+      );
 
-      // 2. Read and Encrypt bytes
-      final bytes = await dbFile.readAsBytes();
-      final encryptedBytes = EncryptionService().encryptData(bytes, password);
-
+      reportBackupProgress(onProgress, BackupStage.uploading);
       // 3. Check if file already exists in AppData
       final fileList = await driveApi.files.list(
         spaces: 'appDataFolder',
@@ -70,37 +66,35 @@ class GoogleDriveService {
       if (fileList.files != null && fileList.files!.isNotEmpty) {
         // Update existing
         final fileId = fileList.files!.first.id!;
-        await driveApi.files.update(
-          drive.File(),
-          fileId,
-          uploadMedia: media,
-        );
+        await driveApi.files.update(drive.File(), fileId, uploadMedia: media);
       } else {
         // Create new
         final driveFile = drive.File()
           ..name = 'spendy_backup.enc'
           ..parents = ['appDataFolder'];
-        await driveApi.files.create(
-          driveFile,
-          uploadMedia: media,
-        );
+        await driveApi.files.create(driveFile, uploadMedia: media);
       }
       return null;
     } catch (e) {
-      debugPrint('Google Drive Backup Error: $e');
-      return 'Backup Error: $e';
+      return 'Check your connection and Google Drive access, then try again.';
+    } finally {
+      authenticateClient?.close();
     }
   }
 
-  Future<String?> restoreDatabase(String password) async {
+  Future<String?> restoreDatabase(
+    String password, {
+    BackupProgressCallback? onProgress,
+  }) async {
     if (_currentUser == null) {
       final error = await signIn();
       if (error != null) return error;
     }
 
+    _GoogleAuthClient? authenticateClient;
     try {
       final authHeaders = await _currentUser!.authHeaders;
-      final authenticateClient = _GoogleAuthClient(authHeaders);
+      authenticateClient = _GoogleAuthClient(authHeaders);
       final driveApi = drive.DriveApi(authenticateClient);
 
       // 1. Find the file
@@ -109,44 +103,40 @@ class GoogleDriveService {
         q: "name = 'spendy_backup.enc'",
       );
 
-      if (fileList.files == null || fileList.files!.isEmpty) return 'No backup file found in Google Drive.';
+      if (fileList.files == null || fileList.files!.isEmpty) {
+        return 'No backup file found in Google Drive.';
+      }
 
       final fileId = fileList.files!.first.id!;
 
-      // 2. Download
-      await driveApi.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.metadata,
-      ); // This is just metadata, we need to download media
-      
-      final mediaResponse = await driveApi.files.get(
-        fileId,
-        downloadOptions: drive.DownloadOptions.fullMedia,
-      ) as drive.Media;
+      final mediaResponse =
+          await driveApi.files.get(
+                fileId,
+                downloadOptions: drive.DownloadOptions.fullMedia,
+              )
+              as drive.Media;
 
-      final List<int> dataBytes = [];
+      reportBackupProgress(onProgress, BackupStage.downloading);
+      final dataBytes = BytesBuilder(copy: false);
       await for (final chunk in mediaResponse.stream) {
-        dataBytes.addAll(chunk);
+        dataBytes.add(chunk);
+        if (dataBytes.length > BackupSnapshot.maxBytes + 1024) {
+          throw const FormatException('Backup too large.');
+        }
       }
 
-      // 3. Decrypt
-      final decryptedBytes = EncryptionService().decryptData(
-        Uint8List.fromList(dataBytes),
+      await BackupSnapshot().restore(
+        dataBytes.takeBytes(),
         password,
+        onProgress: onProgress,
       );
-
-      // 4. Overwrite local database
-      String dbPath = join(await getDatabasesPath(), 'expencify.db');
-      final dbFile = File(dbPath);
-      
-      // Close the database to release the file lock and clear the cached instance
-      await DatabaseHelper().closeDatabase();
-      
-      await dbFile.writeAsBytes(decryptedBytes);
       return null;
+    } on BackupRestoreException catch (error) {
+      return error.message;
     } catch (e) {
-      debugPrint('Google Drive Restore Error: $e');
-      return 'Restore Error: $e';
+      return 'The backup could not be restored. Check your connection and passphrase. Your current data was not replaced.';
+    } finally {
+      authenticateClient?.close();
     }
   }
 }
@@ -156,6 +146,12 @@ class _GoogleAuthClient extends http.BaseClient {
   final http.Client _client = http.Client();
 
   _GoogleAuthClient(this._headers);
+
+  @override
+  void close() {
+    _client.close();
+    super.close();
+  }
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) {

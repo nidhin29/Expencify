@@ -1,31 +1,83 @@
+import 'chat_schema.dart';
+import '../../application/services/performance/performance_probe.dart';
 import 'dart:async';
-import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'live_database_store.dart';
 
 class DatabaseHelper {
+  static const schemaVersion = 21;
   static final DatabaseHelper _instance = DatabaseHelper._internal();
   factory DatabaseHelper() => _instance;
-  DatabaseHelper._internal();
+  DatabaseHelper._internal()
+    : _pathOverride = null,
+      _encryptedStore = null,
+      _validateLegacy = null;
 
-  static Database? _database;
+  /// Plain SQLite for test fixtures and isolated legacy-backup migration copies.
+  /// The live production database uses SQLCipher.
+  DatabaseHelper.atPath(String path)
+    : _pathOverride = path,
+      _encryptedStore = null,
+      _validateLegacy = null;
+
+  /// Opens a disposable backup copy once, validating before schema migration.
+  DatabaseHelper.legacyImport(
+    String path,
+    Future<void> Function(Database) validate,
+  ) : _pathOverride = path,
+      _encryptedStore = null,
+      _validateLegacy = validate;
+  DatabaseHelper.encrypted(LiveDatabaseStore store)
+    : _pathOverride = null,
+      _encryptedStore = store,
+      _validateLegacy = null;
+  final Future<void> Function(Database)? _validateLegacy;
+  final String? _pathOverride;
+  final LiveDatabaseStore? _encryptedStore;
+  Future<Database>? _opening;
+
+  Database? _database;
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
+    _opening ??= PerformanceProbe.measure('database.open', _initDatabase);
+    try {
+      _database = await _opening;
+      return _database!;
+    } finally {
+      _opening = null;
+    }
   }
 
   Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'expencify.db');
-    return await openDatabase(
-      path,
-      version: 13,
+    final options = OpenDatabaseOptions(
+      version: schemaVersion,
+      singleInstance: _validateLegacy == null,
       onConfigure: (db) async {
-        await db.rawQuery('PRAGMA journal_mode=WAL');
+        await db.rawQuery('PRAGMA temp_store=MEMORY');
+        if (_pathOverride == null) {
+          await db.rawQuery('PRAGMA cipher_memory_security=ON');
+        }
+        if (_validateLegacy != null) {
+          await _validateLegacy(db);
+          // This isolated copy needs no concurrent readers or WAL sidecars.
+          await db.rawQuery('PRAGMA journal_mode=DELETE');
+        } else {
+          await db.rawQuery('PRAGMA journal_mode=WAL');
+        }
       },
+      onOpen: _verifySchema,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
+    if (_pathOverride != null) {
+      return databaseFactory.openDatabase(_pathOverride, options: options);
+    }
+    // Keep the old sqflite directory so existing installations can be migrated.
+    final store =
+        _encryptedStore ??
+        LiveDatabaseStore(directory: await getDatabasesPath());
+    return store.open(options);
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -35,7 +87,8 @@ class DatabaseHelper {
         name TEXT,
         balance REAL,
         bank_name TEXT,
-        account_number TEXT
+        account_number TEXT,
+        initial_balance REAL
       )
     ''');
 
@@ -108,6 +161,7 @@ class DatabaseHelper {
         title TEXT,
         amount REAL,
         due_date TEXT,
+        recurrence_anchor TEXT,
         is_recurring INTEGER DEFAULT 0,
         frequency TEXT DEFAULT 'monthly'
       )
@@ -157,42 +211,64 @@ class DatabaseHelper {
       )
     ''');
 
+    await _createIndexes(db);
     await _insertDefaultCategories(db);
     await _insertDefaultAccount(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    await _upgrade(db, oldVersion, newVersion);
+    if (oldVersion < 20) {
+      await db.execute('DROP INDEX IF EXISTS transactions_parent');
+    }
+    await _createIndexes(db);
+    await _verifySchema(db);
+  }
+
+  Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       try {
         await db.execute(
           'ALTER TABLE user_settings ADD COLUMN has_onboarded INTEGER DEFAULT 0',
         );
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 3) {
       try {
         await db.execute(
           'ALTER TABLE user_settings ADD COLUMN auth_token TEXT',
         );
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 5) {
       try {
         await db.execute('ALTER TABLE transactions ADD COLUMN image_path TEXT');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 4) {
       try {
         await db.execute('ALTER TABLE transactions ADD COLUMN merchant TEXT');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute(
           'ALTER TABLE user_settings ADD COLUMN is_dark_mode INTEGER DEFAULT 0',
         );
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute('ALTER TABLE user_settings ADD COLUMN pin TEXT');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute('''
           CREATE TABLE IF NOT EXISTS goals(
@@ -205,7 +281,9 @@ class DatabaseHelper {
             color INTEGER DEFAULT 4282532081
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute('''
           CREATE TABLE IF NOT EXISTS reminders(
@@ -217,7 +295,9 @@ class DatabaseHelper {
             frequency TEXT DEFAULT 'monthly'
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute('''
           CREATE TABLE IF NOT EXISTS appliances(
@@ -229,7 +309,9 @@ class DatabaseHelper {
             amc_amount REAL DEFAULT 0
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 6) {
       try {
@@ -242,7 +324,9 @@ class DatabaseHelper {
             type TEXT
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
 
       // Add new categories if they don't exist
       await _insertDefaultCategories(db);
@@ -252,25 +336,35 @@ class DatabaseHelper {
         await db.execute(
           'ALTER TABLE transactions ADD COLUMN parent_id INTEGER',
         );
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 8) {
       try {
         await db.execute('ALTER TABLE budgets ADD COLUMN account_id INTEGER');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 9) {
       try {
         await db.execute('ALTER TABLE goals ADD COLUMN account_id INTEGER');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 10) {
       try {
         await db.execute('ALTER TABLE budgets ADD COLUMN account_id INTEGER');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
       try {
         await db.execute('ALTER TABLE goals ADD COLUMN account_id INTEGER');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 11) {
       try {
@@ -281,7 +375,9 @@ class DatabaseHelper {
             timestamp INTEGER
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 12) {
       try {
@@ -292,7 +388,9 @@ class DatabaseHelper {
             timestamp INTEGER
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
     }
     if (oldVersion < 13) {
       try {
@@ -310,7 +408,104 @@ class DatabaseHelper {
             FOREIGN KEY (account_id) REFERENCES accounts (id)
           )
         ''');
-      } catch (_) {}
+      } catch (e) {
+        if (!'$e'.contains('duplicate column name')) rethrow;
+      }
+    }
+    if (oldVersion < 15) {
+      final columns = await db.rawQuery('PRAGMA table_info(accounts)');
+      if (!columns.any((column) => column['name'] == 'initial_balance')) {
+        await db.execute(
+          'ALTER TABLE accounts ADD COLUMN initial_balance REAL',
+        );
+      }
+    }
+    if (oldVersion < 16) {
+      final columns = await db.rawQuery('PRAGMA table_info(reminders)');
+      if (!columns.any((column) => column['name'] == 'recurrence_anchor')) {
+        await db.execute(
+          'ALTER TABLE reminders ADD COLUMN recurrence_anchor TEXT',
+        );
+      }
+    }
+  }
+
+  static const financialTables = [
+    'transactions',
+    'subscriptions',
+    'budgets',
+    'goals',
+    'reminders',
+    'appliances',
+    'registered_entities',
+    'processed_sms_log',
+    'accounts',
+    'categories',
+  ];
+
+  Future<void> _createIndexes(Database db) async {
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS budget_update_log (delivery_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS chat_state(id INTEGER PRIMARY KEY, generation INTEGER NOT NULL)',
+    );
+    await db.execute(
+      'INSERT OR IGNORE INTO chat_state(id, generation) VALUES(1,0)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS chat_query_context(id INTEGER PRIMARY KEY, generation INTEGER NOT NULL, account_id INTEGER, question TEXT NOT NULL, question_id INTEGER, plan TEXT NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, role TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0, prompt TEXT)',
+    );
+    await ChatSchema.ensure(db);
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS sms_review(identity TEXT PRIMARY KEY, body TEXT NOT NULL, sender TEXT, date TEXT NOT NULL, reason TEXT NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS transaction_vectors(transaction_id INTEGER PRIMARY KEY, model TEXT NOT NULL, source TEXT NOT NULL, vector BLOB NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TRIGGER IF NOT EXISTS vector_transaction_delete AFTER DELETE ON transactions BEGIN DELETE FROM transaction_vectors WHERE transaction_id = OLD.id; END',
+    );
+    await db.execute(
+      'CREATE TRIGGER IF NOT EXISTS vector_transaction_update AFTER UPDATE ON transactions BEGIN DELETE FROM transaction_vectors WHERE transaction_id = OLD.id; END',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS transactions_account_date ON transactions(account_id, date)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS transactions_parent ON transactions(parent_id, date)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS transactions_date ON transactions(date)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS transactions_type_date ON transactions(type, date)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS sms_identity ON processed_sms_log(body)',
+    );
+  }
+
+  Future<void> _verifySchema(Database db) async {
+    for (final table in [...financialTables, 'user_settings']) {
+      await db.query(table, limit: 0);
+    }
+    for (final entry in {
+      'accounts': ['initial_balance'],
+      'reminders': ['recurrence_anchor'],
+      'transactions': ['account_id', 'parent_id', 'merchant', 'image_path'],
+      'budgets': ['account_id'],
+      'goals': ['account_id'],
+    }.entries) {
+      final columns = await db.rawQuery('PRAGMA table_info(${entry.key})');
+      final names = columns.map((row) => row['name']).toSet();
+      if (!names.containsAll(entry.value)) {
+        throw StateError('Incomplete database migration: ${entry.key}');
+      }
     }
   }
 
@@ -448,6 +643,13 @@ class DatabaseHelper {
     final db = await database;
     await db.transaction((txn) async {
       await txn.delete('transactions');
+      await txn.delete('subscriptions');
+      await txn.delete('registered_entities');
+      await txn.delete('processed_sms_log');
+      await txn.delete('sms_review');
+      await txn.delete('transaction_vectors');
+      await ChatSchema.reset(txn);
+      await txn.delete('budget_update_log');
       await txn.delete('accounts');
       await txn.delete('budgets');
       await txn.delete('goals');
@@ -455,6 +657,8 @@ class DatabaseHelper {
       await txn.delete('appliances');
       await txn.delete('categories');
       await txn.delete('user_settings');
+      await _insertDefaultCategories(txn);
+      await _insertDefaultAccount(txn);
     });
   }
 
@@ -463,6 +667,13 @@ class DatabaseHelper {
     final db = await database;
     await db.transaction((txn) async {
       await txn.delete('transactions');
+      await txn.delete('subscriptions');
+      await txn.delete('registered_entities');
+      await txn.delete('processed_sms_log');
+      await txn.delete('sms_review');
+      await txn.delete('transaction_vectors');
+      await ChatSchema.reset(txn);
+      await txn.delete('budget_update_log');
       await txn.delete('accounts');
       await txn.delete('budgets');
       await txn.delete('goals');

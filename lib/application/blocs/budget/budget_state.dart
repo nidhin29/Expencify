@@ -1,3 +1,4 @@
+import '../refresh_status.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/budget.dart';
 
@@ -12,12 +13,20 @@ class BudgetInitial extends BudgetState {}
 
 class BudgetLoading extends BudgetState {}
 
-class BudgetLoaded extends BudgetState {
+class BudgetLoaded extends BudgetState implements RefreshStatus {
+  @override
+  final bool refreshing;
+  @override
+  final String? refreshError;
   final List<Budget> budgets;
-  const BudgetLoaded(this.budgets);
+  const BudgetLoaded(
+    this.budgets, {
+    this.refreshing = false,
+    this.refreshError,
+  });
 
   @override
-  List<Object?> get props => [budgets];
+  List<Object?> get props => [refreshing, refreshError, budgets];
 }
 
 class BudgetError extends BudgetState {

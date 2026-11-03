@@ -1,7 +1,8 @@
+import 'sms_tracking_preference.dart';
+import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:telephony/telephony.dart';
@@ -18,6 +19,11 @@ class SmsMonitorService {
   void _initNativeSmsChannel() {
     const channel = MethodChannel('com.example.expencify/native_sms');
     channel.setMethodCallHandler((call) async {
+      if (call.method == 'processPendingSms') {
+        final complete = await processPendingSms();
+        onSmsProcessed.add(null);
+        return complete;
+      }
       if (call.method == 'onSmsReceived') {
         try {
           final data = call.arguments as Map;
@@ -26,15 +32,14 @@ class SmsMonitorService {
           final sender = data['sender'] as String;
 
           final date = DateTime.fromMillisecondsSinceEpoch(ts);
-          debugPrint(
-            '>>> [SmsMonitorService] SMS Captured via Main Channel: $sender',
-          );
-          await processSms(body, date: date);
-
-          // Notify Main isolate UI state streams to reload BLoC
+          debugPrint('>>> [SmsMonitorService] SMS captured via main channel');
+          final success = await processSms(body, date: date, sender: sender);
           onSmsProcessed.add(null);
+          return success;
         } catch (e) {
-          debugPrint('>>> [SmsMonitorService] Main Channel Error: $e');
+          debugPrint(
+            '>>> [SmsMonitorService] Main Channel Error: ${e.runtimeType}',
+          );
         }
       }
       return null;
@@ -58,118 +63,85 @@ class SmsMonitorService {
 
   Future<bool> hasPermission() async => await Permission.sms.isGranted;
 
-  /// Start SMS monitoring.
-  /// Step 1: Register the SMS listener (critical — must always succeed)
-  /// Step 2: Start the foreground service (best-effort — to keep process alive)
+  /// Capture uses native broadcasts; bounded jobs drain the encrypted queue.
   Future<void> startBackgroundListening() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    await SmsTrackingPreference.initialize(
+      previouslyGranted: await Permission.sms.isGranted,
+    );
+    if (!await SmsTrackingPreference.isEnabled()) {
+      await const MethodChannel(
+        'com.example.expencify/native_sms',
+      ).invokeMethod<void>('cancelSmsWork');
+      return;
+    }
     debugPrint('>>> [SmsMonitorService] Starting...');
 
     // ── Step 1: Permission check ────────────────────────────────────────────
     bool granted = await Permission.sms.isGranted;
     if (!granted) {
-      debugPrint('>>> [SmsMonitorService] SMS permission not granted yet – aborting background listener startup.');
+      await SmsTrackingPreference.setEnabled(false);
+      await const MethodChannel(
+        'com.example.expencify/native_sms',
+      ).invokeMethod<void>('cancelSmsWork');
+      debugPrint(
+        '>>> [SmsMonitorService] SMS permission not granted yet – aborting background listener startup.',
+      );
       return;
     }
     debugPrint('>>> [SmsMonitorService] SMS permission granted');
 
-    // ── Step 1b: Drain any SMS saved while app was CLOSED (SharedPrefs queue) ───
-    // The SmsReceiver writes to SharedPrefs instead of launching a 2nd engine.
+    // ── Step 1b: Drain encrypted SMS saved while the app was closed ───
+    // The native receiver persists encrypted messages before scheduling work.
     // This prevents ANR/Signal 3 crashes.
-    unawaited(processPendingSms());
+    unawaited(
+      processPendingSms().catchError((Object e) {
+        debugPrint('Pending SMS will retry: ${e.runtimeType}');
+        return false;
+      }),
+    );
 
     // ── Step 1c: Startup inbox scan (safety net) ─────────────────────────────
-    // Catches any bank SMS that arrived while the foreground service was killed.
+    // Recovers messages missed while background delivery was restricted.
     unawaited(_runStartupScan());
 
-    // ── Step 2: Register SMS listener ────────────────────────────────────────
-    // MUST happen before starting the foreground service.
-    // Only call listenIncomingSms ONCE; a second call overwrites the first.
+    await const MethodChannel(
+      'com.example.expencify/native_sms',
+    ).invokeMethod<void>('scheduleSmsWork');
+  }
+
+  Future<void> stopBackgroundListening() async {
+    await SmsTrackingPreference.setEnabled(false);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('sms_setup_dismissed', true);
+    if (kIsWeb || !Platform.isAndroid) return;
     try {
-      _telephony.listenIncomingSms(
-        onNewMessage: (SmsMessage message) {
-          debugPrint('>>> [SmsMonitorService] onNewMessage: ${message.body}');
-          onBackgroundSmsReceived(message);
-        },
-        // DO NOT pass onBackgroundMessage — the telephony package is discontinued
-        // and its _flutterSmsSetupBackgroundChannel lacks @pragma('vm:entry-point'),
-        // causing AOT tree-shaking to remove it, which crashes the background isolate:
-        // "Could not closurize _flutterSmsSetupBackgroundChannel from native code"
-        // The foreground service keeps our process alive, so onNewMessage is sufficient.
-        listenInBackground: false,
-      );
-      debugPrint('>>> [SmsMonitorService] SMS listener registered ✓');
-    } catch (e) {
-      debugPrint('>>> [SmsMonitorService] listenIncomingSms failed: $e');
-    }
-
-    // ── Step 2b: Setup port callback to receive Isolate events ────────────
-    FlutterForegroundTask.addTaskDataCallback((data) {
-      if (data is Map && data['type'] == 'sms_parsed') {
-        debugPrint('>>> [SmsMonitorService] Isolate reports SMS parsed.');
-        onSmsProcessed.add(null); // Trigger UI broadcast
-      }
-    });
-    debugPrint('>>> [SmsMonitorService] Task Data Callback registered ✓');
-
-    // ── Step 3: Foreground service (keeps process alive when app is closed) ──
-    // This is best-effort. Even if it fails, the SMS listener above is still
-    // registered and will work while the app is open or in the recent apps list.
+      await const MethodChannel(
+        'com.example.expencify/native_sms',
+      ).invokeMethod<void>('cancelSmsWork');
+    } catch (_) {}
     try {
-      FlutterForegroundTask.init(
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'expencify_sms_service',
-          channelName: 'SMS Monitor',
-          channelDescription: 'Monitoring bank SMS in the background.',
-          channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.LOW,
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(),
-        foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.repeat(15000),
-          autoRunOnBoot: true,
-          allowWakeLock: true,
-          allowWifiLock: true,
-        ),
-      );
-
-      if (await FlutterForegroundTask.isRunningService) {
-        // Service is already running with its SMS listener — leave it alone!
-        // Calling restartService() would destroy the old isolate's listener
-        // and the new isolate might not start correctly in the same process.
-        debugPrint(
-          '>>> [SmsMonitorService] Foreground service already running — leaving it intact ✓',
-        );
-        // Optionally update the notification text only
-        await FlutterForegroundTask.updateService(
-          notificationTitle: 'Expencify',
-          notificationText: 'Watching for bank transactions...',
-        );
-      } else {
-        await FlutterForegroundTask.startService(
-          serviceId: 1001,
-          notificationTitle: 'Expencify',
-          notificationText: 'Watching for bank transactions...',
-          callback: startForegroundSmsService,
-        );
-      }
-      debugPrint('>>> [SmsMonitorService] Foreground service started ✓');
-    } catch (e) {
-      // Service failed — SMS listener still works while app is open
-      debugPrint(
-        '>>> [SmsMonitorService] Foreground service failed (non-fatal): $e',
-      );
-    }
+      await const MethodChannel(
+        'com.example.expencify/native_sms',
+      ).invokeMethod<void>('clearPendingSms');
+    } catch (_) {}
   }
 
   /// Reads all SMS from inbox and returns only bank/financial ones, parsed.
   Future<List<Map<String, dynamic>>> readBankSmsFromInbox({
     int limit = 100,
   }) async {
-    final granted = await requestPermission();
+    if (!await SmsTrackingPreference.isEnabled()) return [];
+    final granted = await hasPermission();
     if (!granted) return [];
 
     final List<SmsMessage> messages = await _telephony.getInboxSms(
-      columns: [SmsColumn.ADDRESS, SmsColumn.BODY, SmsColumn.DATE],
+      columns: [
+        SmsColumn.ADDRESS,
+        SmsColumn.BODY,
+        SmsColumn.DATE,
+        SmsColumn.DATE_SENT,
+      ],
       filter: SmsFilter.where(SmsColumn.DATE).greaterThan(
         DateTime.now()
             .subtract(const Duration(days: 90))
@@ -195,7 +167,9 @@ class SmsMonitorService {
       );
       final category = rulesResult['category']!;
       final updatedMerchant = rulesResult['merchant']!;
-      final dateMs = msg.date ?? DateTime.now().millisecondsSinceEpoch;
+      final dateMs = (msg.dateSent ?? 0) > 0
+          ? msg.dateSent!
+          : msg.date ?? DateTime.now().millisecondsSinceEpoch;
       results.add({
         'smsBody': body,
         'sender': msg.address ?? '',
@@ -217,23 +191,32 @@ class SmsMonitorService {
   /// user intentionally deleted.
   Future<void> _runStartupScan() async {
     debugPrint('>>> [SmsMonitorService] Running startup inbox scan...');
+    if (!await SmsTrackingPreference.isEnabled()) return;
     try {
       final prefs = await SharedPreferences.getInstance();
 
       // Read the last scan watermark. Default to 24h ago on first run
       // (avoids a 30-day flood on install while still catching missed SMS).
-      final lastScanMs =
+      var lastScanMs =
           prefs.getInt('sms_last_scan_ts') ??
           DateTime.now()
               .subtract(const Duration(hours: 24))
               .millisecondsSinceEpoch;
 
+      final enabledSince = prefs.getInt(SmsTrackingPreference.sinceKey) ?? 0;
+      if (enabledSince > lastScanMs) lastScanMs = enabledSince;
       debugPrint(
         '>>> [SmsMonitorService] Scanning SMS since ${DateTime.fromMillisecondsSinceEpoch(lastScanMs)}',
       );
 
+      final scanStarted = DateTime.now().millisecondsSinceEpoch;
       final msgs = await _telephony.getInboxSms(
-        columns: [SmsColumn.ADDRESS, SmsColumn.BODY, SmsColumn.DATE],
+        columns: [
+          SmsColumn.ADDRESS,
+          SmsColumn.BODY,
+          SmsColumn.DATE,
+          SmsColumn.DATE_SENT,
+        ],
         filter: SmsFilter.where(
           SmsColumn.DATE,
         ).greaterThan(lastScanMs.toString()),
@@ -244,24 +227,30 @@ class SmsMonitorService {
       for (final msg in msgs) {
         final body = msg.body ?? '';
         if (body.isEmpty) continue;
-        final msgDate = msg.date != null
-            ? DateTime.fromMillisecondsSinceEpoch(msg.date!)
+        final sentMs = (msg.dateSent ?? 0) > 0 ? msg.dateSent : msg.date;
+        final msgDate = sentMs != null
+            ? DateTime.fromMillisecondsSinceEpoch(sentMs)
             : DateTime.now();
-        await processSms(body, date: msgDate, suppressNotification: true);
+        final success = await processSms(
+          body,
+          date: msgDate,
+          sender: msg.address,
+          suppressNotification: true,
+        );
+        if (!success) return;
         found++;
       }
 
       // Advance the watermark to now so the next scan won't re-process these.
-      await prefs.setInt(
-        'sms_last_scan_ts',
-        DateTime.now().millisecondsSinceEpoch,
-      );
+      await prefs.setInt('sms_last_scan_ts', scanStarted);
 
       debugPrint(
         '>>> [SmsMonitorService] Startup scan complete — processed $found new messages',
       );
     } catch (e) {
-      debugPrint('>>> [SmsMonitorService] Startup scan failed (non-fatal): $e');
+      debugPrint(
+        '>>> [SmsMonitorService] Startup scan failed (non-fatal): ${e.runtimeType}',
+      );
     }
   }
 }

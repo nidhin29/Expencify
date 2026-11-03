@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/goal.dart';
 
@@ -12,7 +13,8 @@ class LoadGoals extends GoalEvent {}
 
 class SaveGoal extends GoalEvent {
   final Goal goal;
-  const SaveGoal(this.goal);
+  final Completer<bool>? completion;
+  const SaveGoal(this.goal, {this.completion});
 
   @override
   List<Object?> get props => [goal];
@@ -29,7 +31,8 @@ class DeleteGoal extends GoalEvent {
 class AddGoalContribution extends GoalEvent {
   final int goalId;
   final double amount;
-  const AddGoalContribution(this.goalId, this.amount);
+  final Completer<bool>? completion;
+  const AddGoalContribution(this.goalId, this.amount, {this.completion});
 
   @override
   List<Object?> get props => [goalId, amount];

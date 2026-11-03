@@ -1,43 +1,54 @@
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import 'weekly_recap_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
-import 'package:expencify/domain/repositories/transaction_repository.dart';
-import 'package:expencify/presentation/screens/reports/category_detail_screen.dart';
-import 'package:expencify/application/blocs/account/account_bloc.dart';
-import 'package:expencify/application/blocs/account/account_state.dart';
+import '../../../application/blocs/account/account_bloc.dart';
+import '../../../application/blocs/account/account_event.dart';
+import '../../../application/blocs/account/account_state.dart';
+import '../../../application/services/reports/insight_period.dart';
+import '../../../domain/repositories/transaction_repository.dart';
+import 'category_detail_screen.dart';
 
 class ReportsScreen extends StatefulWidget {
-  const ReportsScreen({super.key});
-
+  final DateTime Function()? now;
+  const ReportsScreen({super.key, this.now});
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
 }
 
 class _ReportsScreenState extends State<ReportsScreen> {
-  final _rupeeFmt = NumberFormat.currency(
+  String _share(double fraction) => fraction > 0 && fraction < .001
+      ? '<0.1%'
+      : '${(fraction * 100).toStringAsFixed(1)}%';
+
+  final _money = NumberFormat.currency(
     locale: 'en_IN',
     symbol: '₹',
-    decimalDigits: 0,
+    decimalDigits: 2,
   );
-
-  Map<String, double> _categoryTotals = {};
-  String _selectedPeriod = 'This Month';
-  DateTimeRange? _customRange;
-  bool _loading = true;
-
-  final List<Color> _pieColors = [
-    const Color(0xFF6366F1),
-    const Color(0xFFEC4899),
-    const Color(0xFFF59E0B),
-    const Color(0xFF10B981),
-    const Color(0xFF3B82F6),
-    const Color(0xFFEF4444),
-    const Color(0xFF8B5CF6),
-    const Color(0xFF06B6D4),
-    const Color(0xFF84CC16),
-    const Color(0xFFF97316),
+  InsightPeriod _period = InsightPeriod.thisMonth;
+  DateTimeRange? _custom;
+  InsightWindow? _window;
+  List<MapEntry<String, double>> _entries = [];
+  double? _previous;
+  int? _accountId;
+  String _accountName = 'All accounts';
+  Object? _dataScope;
+  bool _hasData = false;
+  bool _loading = true, _comparisonFailed = false;
+  String? _error;
+  int _request = 0;
+  static const _colors = [
+    Color(0xFF7C3AED),
+    Color(0xFF0284C7),
+    Color(0xFFDB2777),
+    Color(0xFFB45309),
+    Color(0xFF047857),
+    Color(0xFF64748B),
   ];
-
   @override
   void initState() {
     super.initState();
@@ -45,563 +56,533 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
-    final transactionRepo = context.read<TransactionRepository>();
-
-    final now = DateTime.now();
-    DateTime? from;
-    DateTime? to;
-
-    if (_selectedPeriod == 'This Month') {
-      from = DateTime(now.year, now.month, 1);
-      to = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-    } else if (_selectedPeriod == 'Last Month') {
-      from = DateTime(now.year, now.month - 1, 1);
-      to = DateTime(now.year, now.month, 0, 23, 59, 59);
-    } else if (_selectedPeriod == 'This Year') {
-      from = DateTime(now.year, 1, 1);
-      to = DateTime(now.year + 1, 1, 0, 23, 59, 59);
-    } else if (_selectedPeriod == 'Custom' && _customRange != null) {
-      from = _customRange!.start;
-      to = _customRange!.end;
-    } else if (_selectedPeriod == 'All Time') {
-      from = null;
-      to = null;
-    }
-
-    final accountState = context.read<AccountBloc>().state;
-    final selectedId = accountState is AccountLoaded
-        ? accountState.selectedAccountId
-        : null;
-
-    final categoryTotals = await transactionRepo.getCategoryTotals(
-      type: 'expense',
-      from: from,
-      to: to,
-      accountId: selectedId,
+    final request = ++_request;
+    final state = context.read<AccountBloc>().state;
+    final id = state is AccountLoaded ? state.selectedAccountId : null;
+    final name = state is AccountLoaded
+        ? state.selectedAccount?.name ?? 'All accounts'
+        : 'All accounts';
+    final window = InsightWindow.build(
+      _period,
+      widget.now?.call() ?? DateTime.now(),
+      customFrom: _custom?.start,
+      customTo: _custom?.end,
     );
-
-    if (mounted) {
+    final repo = context.read<TransactionRepository>();
+    final scope = (id, _period, _custom?.start, _custom?.end);
+    setState(() {
+      _loading = true;
+      _hasData = _dataScope == scope;
+      _error = null;
+      _accountId = id;
+      _accountName = name;
+      _window = window;
+    });
+    var comparisonFailed = false;
+    try {
+      final results = await Future.wait<Map<String, double>?>([
+        repo.getCategoryTotals(
+          type: 'expense',
+          from: window.from,
+          to: window.to,
+          accountId: id,
+        ),
+        if (window.hasComparison)
+          repo
+              .getCategoryTotals(
+                type: 'expense',
+                from: window.previousFrom,
+                to: window.previousTo,
+                accountId: id,
+              )
+              .then<Map<String, double>?>((v) => v)
+              .catchError((Object _) {
+                comparisonFailed = true;
+                return null;
+              }),
+      ]);
+      if (!mounted || request != _request) return;
       setState(() {
-        _categoryTotals = categoryTotals;
+        _entries = insightEntries(results.first!);
+        _previous = results.length > 1 && results[1] != null
+            ? insightTotal(insightEntries(results[1]!))
+            : null;
+        _comparisonFailed = comparisonFailed;
+        _dataScope = scope;
+        _hasData = true;
         _loading = false;
       });
+    } catch (_) {
+      if (!mounted || request != _request) return;
+      setState(() {
+        _loading = false;
+        _error = 'Could not load Insights.';
+      });
     }
+  }
+
+  Future<void> _choosePeriod() async {
+    final selected = await showModalBottomSheet<InsightPeriod>(
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (ctx) => SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: InsightPeriod.values
+              .map(
+                (p) => ListTile(
+                  title: Text(p.label),
+                  trailing: p == _period ? const Icon(AppIcons.check) : null,
+                  onTap: () => Navigator.pop(ctx, p),
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+    if (!mounted || selected == null) return;
+    if (selected == InsightPeriod.custom) {
+      final now = widget.now?.call() ?? DateTime.now();
+      final range = await showAppDateRangePicker(
+        context: context,
+        firstDate: DateTime(2000),
+        lastDate: now,
+        initialDateRange: _custom,
+      );
+      if (!mounted || range == null) return;
+      setState(() {
+        _period = selected;
+        _custom = range;
+      });
+    } else {
+      setState(() {
+        _period = selected;
+        _custom = null;
+      });
+    }
+    await _load();
+  }
+
+  Future<void> _chooseAccount() async {
+    final state = context.read<AccountBloc>().state;
+    if (state is! AccountLoaded) return;
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (ctx) => SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: const Text('All accounts'),
+              trailing: state.selectedAccountId == null
+                  ? const Icon(AppIcons.check)
+                  : null,
+              onTap: () => Navigator.pop(ctx, -1),
+            ),
+            ...state.accounts.map(
+              (a) => ListTile(
+                title: Text(a.name),
+                subtitle: Text(a.bankName),
+                trailing: state.selectedAccountId == a.id
+                    ? const Icon(AppIcons.check)
+                    : null,
+                onTap: () => Navigator.pop(ctx, a.id),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || selected == null) return;
+    context.read<AccountBloc>().add(
+      SelectAccount(selected == -1 ? null : selected),
+    );
+  }
+
+  Future<void> _openCategory(String name) async {
+    final window = _window!;
+    final accountId = _accountId;
+    final accountName = _accountName;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CategoryDetailScreen(
+          category: name,
+          type: 'expense',
+          accountId: accountId,
+          accountLabel: accountName,
+          from: window.from,
+          to: window.to,
+        ),
+      ),
+    );
+    if (mounted) _load();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
     return BlocListener<AccountBloc, AccountState>(
-      listener: (context, state) {
-        if (state is AccountLoaded) {
-          _load();
-        }
+      listener: (_, state) {
+        if (state is AccountLoaded) _load();
       },
       child: Scaffold(
-        backgroundColor: theme.scaffoldBackgroundColor,
-        body: CustomScrollView(
-          physics: const BouncingScrollPhysics(),
-          slivers: [
-            _buildSliverAppBar(theme),
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 8,
-                ),
-                child: _buildPeriodSelector(theme),
+        appBar: AppBar(
+          title: const Text('Insights'),
+          actions: [
+            IconButton(
+              tooltip: 'Weekly recap',
+              icon: const Icon(AppIcons.dateRange),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const WeeklyRecapScreen()),
               ),
             ),
-            if (_loading)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_categoryTotals.isEmpty)
-              SliverFillRemaining(
-                child: _buildEmpty(theme, 'No expense data for this period'),
-              )
-            else ...[
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                sliver: SliverToBoxAdapter(child: _buildChartSection(theme)),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 32, 20, 16),
-                sliver: SliverToBoxAdapter(
-                  child: Text(
-                    'Breakdown',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.5,
+            IconButton(
+              tooltip: 'Refresh Insights',
+              onPressed: _loading ? null : _load,
+              icon: const Icon(AppIcons.refresh),
+            ),
+          ],
+        ),
+        body: LoadingFeedback(
+          loading: _loading && _hasData,
+          error: _hasData ? _error : null,
+          onRetry: _load,
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+              children: [
+                LayoutBuilder(
+                  builder: (context, c) {
+                    final stack =
+                        c.maxWidth < 340 ||
+                        MediaQuery.textScalerOf(context).scale(1) > 1.3;
+                    final account = OutlinedButton.icon(
+                      onPressed: _chooseAccount,
+                      icon: const Icon(AppIcons.accounts, size: 18),
+                      label: Text(
+                        _accountName,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                    final period = OutlinedButton.icon(
+                      onPressed: _choosePeriod,
+                      icon: const Icon(AppIcons.calendar, size: 18),
+                      label: Text(_period.label),
+                    );
+                    return stack
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              account,
+                              const SizedBox(height: 8),
+                              period,
+                            ],
+                          )
+                        : Row(
+                            children: [
+                              Expanded(child: account),
+                              const SizedBox(width: 12),
+                              Expanded(child: period),
+                            ],
+                          );
+                  },
+                ),
+                const SizedBox(height: 20),
+                if (_loading && !_hasData)
+                  const Padding(
+                    padding: EdgeInsets.zero,
+                    child: SizedBox(
+                      height: 420,
+                      child: PageLoading(
+                        summary: true,
+                        label: 'Loading report',
+                      ),
                     ),
-                  ),
-                ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 100),
-                sliver: _buildCategoryList(theme),
-              ),
-            ],
-          ],
+                  )
+                else if (_error != null && !_hasData)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 48),
+                    child: Column(
+                      children: [
+                        const Icon(Icons.cloud_off_outlined, size: 40),
+                        const SizedBox(height: 16),
+                        Text(_error!),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: _load,
+                          child: const Text('Try again'),
+                        ),
+                      ],
+                    ),
+                  )
+                else ...[
+                  _summary(theme),
+                  const SizedBox(height: 24),
+                  if (_entries.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 40),
+                      child: Text(
+                        'No expenses recorded in this period.',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyLarge,
+                      ),
+                    )
+                  else ...[
+                    _distribution(theme),
+                    const SizedBox(height: 24),
+                    Text(
+                      '${_entries.length} ${_entries.length == 1 ? 'category' : 'categories'}',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ..._entries.asMap().entries.map(
+                      (e) => _category(
+                        e.value,
+                        _colors[e.key < 5 ? e.key : 5],
+                        theme,
+                      ),
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildSliverAppBar(ThemeData theme) {
-    return SliverAppBar(
-      expandedHeight: 120,
-      floating: false,
-      pinned: true,
-      elevation: 0,
-      scrolledUnderElevation: 0,
-      backgroundColor: theme.scaffoldBackgroundColor,
-      flexibleSpace: FlexibleSpaceBar(
-        centerTitle: false,
-        titlePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        title: Text(
-          'Insights',
-          style: theme.textTheme.displaySmall?.copyWith(fontSize: 24),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPeriodSelector(ThemeData theme) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      child: Row(
-        children: [
-          ...['This Month', 'Last Month', 'This Year', 'All Time'].map((p) {
-            final isSelected = _selectedPeriod == p;
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: GestureDetector(
-                onTap: () {
-                  if (!isSelected) {
-                    setState(() {
-                      _selectedPeriod = p;
-                      _customRange = null;
-                    });
-                    _load();
-                  }
-                },
-                child: _buildPeriodChip(theme, p, isSelected),
-              ),
-            );
-          }),
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: GestureDetector(
-              onTap: _showCustomRangePicker,
-              child: _buildPeriodChip(
-                theme,
-                _selectedPeriod == 'Custom' && _customRange != null
-                    ? '${DateFormat('MMM d').format(_customRange!.start)} - ${DateFormat('MMM d').format(_customRange!.end)}'
-                    : 'Custom...',
-                _selectedPeriod == 'Custom',
-                icon: Icons.calendar_today_rounded,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPeriodChip(
-    ThemeData theme,
-    String label,
-    bool isSelected, {
-    IconData? icon,
-  }) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: isSelected
-            ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceVariant.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: isSelected
-            ? [
-                BoxShadow(
-                  color: theme.colorScheme.primary.withOpacity(0.3),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                ),
-              ]
-            : [],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(
-              icon,
-              size: 14,
-              color: isSelected ? Colors.white : theme.colorScheme.primary,
-            ),
-            const SizedBox(width: 8),
-          ],
-          Text(
-            label,
-            style: theme.textTheme.labelLarge?.copyWith(
-              color: isSelected
-                  ? Colors.white
-                  : theme.colorScheme.onSurfaceVariant,
-              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showCustomRangePicker() async {
-    final range = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-      initialDateRange: _customRange,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-              primary: Theme.of(context).colorScheme.primary,
-              onPrimary: Colors.white,
-            ),
-          ),
-          child: child!,
-        );
-      },
-    );
-
-    if (range != null) {
-      setState(() {
-        _selectedPeriod = 'Custom';
-        _customRange = range;
-      });
-      _load();
+  Widget _summary(ThemeData theme) {
+    final total = insightTotal(_entries);
+    String? comparison;
+    if (_window!.hasComparison) {
+      final label = insightRangeLabel(
+        _window!.previousFrom,
+        _window!.previousTo,
+      );
+      if (_comparisonFailed) {
+        comparison = 'Comparison unavailable';
+      } else if (_previous == 0) {
+        comparison = 'No expenses recorded in $label';
+      } else if (_previous != null) {
+        final delta = ((total - _previous!) * 100).round() / 100;
+        comparison = delta == 0
+            ? 'Same recorded spending as $label'
+            : '${_money.format(delta.abs())} ${delta > 0 ? 'more' : 'less'} than $label';
+      }
     }
-  }
-
-  Widget _buildChartSection(ThemeData theme) {
-    final entries = _categoryTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final total = entries.fold(0.0, (sum, e) => sum + e.value);
-
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
+        color: theme.colorScheme.primaryContainer.withValues(alpha: .3),
+        borderRadius: BorderRadius.circular(24),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'TOTAL SPENT',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      letterSpacing: 1.2,
-                      fontWeight: FontWeight.w700,
-                      color: theme.colorScheme.onSurface.withOpacity(0.4),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _rupeeFmt.format(total),
-                    style: theme.textTheme.displaySmall?.copyWith(
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: -1,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '${entries.length} Cats',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
+          Text('Total spent', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
           Text(
-            'DISTRIBUTION',
-            style: theme.textTheme.labelSmall?.copyWith(
-              letterSpacing: 1.2,
+            _money.format(total),
+            style: theme.textTheme.headlineLarge?.copyWith(
               fontWeight: FontWeight.w700,
-              color: theme.colorScheme.onSurface.withOpacity(0.3),
             ),
           ),
-          const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: SizedBox(
-              height: 48,
-              child: Row(
-                children: entries.map((e) {
-                  final pct = total > 0 ? (e.value / total) : 0.0;
-                  final color =
-                      _pieColors[entries.indexOf(e) % _pieColors.length];
-                  if (pct < 0.01) {
-                    return const SizedBox.shrink(); // Hide tiny slices
-                  }
-                  return Expanded(
-                    flex: (pct * 100).round(),
-                    child: Container(
-                      color: color,
-                      child: pct > 0.1
-                          ? Center(
-                              child: Icon(
-                                _getCategoryIcon(e.key),
-                                color: Colors.white,
-                                size: 16,
-                              ),
-                            )
-                          : null,
-                    ),
-                  );
-                }).toList(),
+          const SizedBox(height: 8),
+          Text(
+            insightRangeLabel(_window!.from, _window!.to),
+            style: theme.textTheme.bodyMedium,
+          ),
+          if (comparison != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              comparison,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
-          ),
-          const SizedBox(height: 20),
-          // Legend (Top 3)
-          Row(
-            children: entries.take(3).map((e) {
-              final color = _pieColors[entries.indexOf(e) % _pieColors.length];
-              return Padding(
-                padding: const EdgeInsets.only(right: 16),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      e.key,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }).toList(),
-          ),
+          ],
+          if (_comparisonFailed)
+            TextButton(onPressed: _load, child: const Text('Retry comparison')),
         ],
       ),
     );
   }
 
-  Widget _buildCategoryList(ThemeData theme) {
-    final entries = _categoryTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final total = entries.fold(0.0, (sum, e) => sum + e.value);
-
-    return SliverList(
-      delegate: SliverChildBuilderDelegate((context, i) {
-        final entry = entries[i];
-        final pct = total > 0 ? (entry.value / total) : 0.0;
-        final color = _pieColors[i % _pieColors.length];
-
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: _buildCategoryCard(theme, entry.key, entry.value, pct, color),
-        );
-      }, childCount: entries.length),
-    );
-  }
-
-  Widget _buildCategoryCard(
-    ThemeData theme,
-    String name,
-    double amount,
-    double pct,
-    Color color,
-  ) {
-    return InkWell(
-      onTap: () {
-        DateTime? from;
-        DateTime? to;
-        final now = DateTime.now();
-        if (_selectedPeriod == 'This Month') {
-          from = DateTime(now.year, now.month, 1);
-          to = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-        } else if (_selectedPeriod == 'Last Month') {
-          from = DateTime(now.year, now.month - 1, 1);
-          to = DateTime(now.year, now.month, 0, 23, 59, 59);
-        } else if (_selectedPeriod == 'This Year') {
-          from = DateTime(now.year, 1, 1);
-          to = DateTime(now.year + 1, 1, 0, 23, 59, 59);
-        } else if (_selectedPeriod == 'Custom' && _customRange != null) {
-          from = _customRange!.start;
-          to = _customRange!.end;
-        }
-
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => CategoryDetailScreen(
-              category: name,
-              type: 'expense',
-              from: from,
-              to: to,
-            ),
-          ),
-        );
-      },
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: theme.colorScheme.onSurface.withOpacity(0.05),
+  Widget _distribution(ThemeData theme) {
+    final slices = insightSlices(_entries);
+    final total = insightTotal(_entries);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Spending by category',
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w700,
           ),
         ),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Icon(_getCategoryIcon(name), color: color, size: 24),
+        const SizedBox(height: 16),
+        Semantics(
+          label: slices
+              .map((e) => '${e.key}: ${_money.format(e.value)}')
+              .join(', '),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: SizedBox(
+              height: 24,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _DistributionPainter(
+                  slices.map((e) => e.value / total).toList(),
+                  _colors,
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        name,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 15,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, c) => Wrap(
+            spacing: 14,
+            runSpacing: 10,
+            children: slices
+                .asMap()
+                .entries
+                .map(
+                  (e) => ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: c.maxWidth),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: _colors[e.key],
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${(pct * 100).toStringAsFixed(1)}% of total',
-                        style: theme.textTheme.labelSmall,
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '${e.value.key} · ${_share(e.value.value / total)}',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+                )
+                .toList(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _category(MapEntry<String, double> e, Color color, ThemeData theme) {
+    final percent = e.value / insightTotal(_entries);
+    final text = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          e.key,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${_share(percent)} of recorded spending',
+          style: theme.textTheme.bodySmall,
+        ),
+      ],
+    );
+    final amount = Text(
+      _money.format(e.value),
+      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+    );
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 0,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => _openCategory(e.key),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (MediaQuery.textScalerOf(context).scale(1) > 1.3) ...[
+                text,
+                const SizedBox(height: 10),
+                amount,
+              ] else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: text),
+                    const SizedBox(width: 12),
+                    Flexible(child: amount),
+                    const SizedBox(width: 6),
+                    const Icon(AppIcons.chevron, size: 18),
+                  ],
                 ),
-                Text(
-                  _rupeeFmt.format(amount),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: -0.5,
-                  ),
+              const SizedBox(height: 14),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: percent,
+                  minHeight: 5,
+                  color: color,
+                  backgroundColor: color.withValues(alpha: .1),
                 ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: pct,
-                backgroundColor: color.withOpacity(0.08),
-                valueColor: AlwaysStoppedAnimation<Color>(color),
-                minHeight: 6,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
+}
 
-  IconData _getCategoryIcon(String category) {
-    category = category.toLowerCase();
-    if (category.contains('food')) {
-      return Icons.restaurant_rounded;
+class _DistributionPainter extends CustomPainter {
+  final List<double> fractions;
+  final List<Color> colors;
+  _DistributionPainter(this.fractions, this.colors);
+  @override
+  void paint(Canvas canvas, Size size) {
+    var left = 0.0;
+    for (var i = 0; i < fractions.length; i++) {
+      final right = i == fractions.length - 1
+          ? size.width
+          : left + size.width * fractions[i];
+      canvas.drawRect(
+        Rect.fromLTRB(left, 0, right, size.height),
+        Paint()..color = colors[i],
+      );
+      left = right;
     }
-    if (category.contains('car') || category.contains('transport')) {
-      return Icons.directions_car_rounded;
-    }
-    if (category.contains('home')) {
-      return Icons.home_rounded;
-    }
-    if (category.contains('shop')) {
-      return Icons.shopping_bag_rounded;
-    }
-    if (category.contains('bill')) {
-      return Icons.receipt_rounded;
-    }
-    if (category.contains('health')) {
-      return Icons.medical_services_rounded;
-    }
-    if (category.contains('entertain')) {
-      return Icons.movie_rounded;
-    }
-    return Icons.category_rounded;
   }
 
-  Widget _buildEmpty(ThemeData theme, String msg) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.analytics_outlined,
-              size: 80,
-              color: theme.colorScheme.primary.withOpacity(0.1),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              msg,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.4),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  @override
+  bool shouldRepaint(covariant _DistributionPainter old) =>
+      !_same(old.fractions, fractions);
+  bool _same(List<double> a, List<double> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }

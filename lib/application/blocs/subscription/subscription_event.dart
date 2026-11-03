@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/subscription.dart';
 
@@ -14,7 +15,8 @@ class ScanForPotentialSubscriptions extends SubscriptionEvent {}
 
 class AddSubscription extends SubscriptionEvent {
   final SubscriptionModel subscription;
-  const AddSubscription(this.subscription);
+  final Completer<bool>? completion;
+  const AddSubscription(this.subscription, {this.completion});
 
   @override
   List<Object?> get props => [subscription];

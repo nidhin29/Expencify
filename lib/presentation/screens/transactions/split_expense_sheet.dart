@@ -1,3 +1,4 @@
+import 'package:expencify/presentation/theme/app_icons.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:expencify/domain/entities/transaction.dart';
@@ -19,11 +20,13 @@ class SplitExpenseItem {
 class SplitExpenseSheet extends StatefulWidget {
   final TransactionModel transaction;
   final Function(List<SplitExpenseItem>) onSplit;
+  final List<SplitExpenseItem>? initialSplits;
 
   const SplitExpenseSheet({
     super.key,
     required this.transaction,
     required this.onSplit,
+    this.initialSplits,
   });
 
   @override
@@ -44,19 +47,36 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
   @override
   void initState() {
     super.initState();
-    _splits = [
-      SplitExpenseItem(
-        id: 'initial',
-        amount: widget.transaction.amount,
-        category: widget.transaction.category,
-        note: widget.transaction.note,
-      ),
-    ];
-    _controllers = [
-      TextEditingController(text: widget.transaction.amount.toStringAsFixed(2)),
-    ];
-    _noteControllers = [TextEditingController(text: widget.transaction.note)];
-    _focusNodes = [FocusNode()];
+    _splits =
+        widget.initialSplits
+            ?.map(
+              (s) => SplitExpenseItem(
+                id: s.id,
+                amount: s.amount,
+                category: s.category,
+                note: s.note,
+              ),
+            )
+            .toList() ??
+        [
+          SplitExpenseItem(
+            id: 'initial',
+            amount: widget.transaction.amount,
+            category: widget.transaction.category,
+            note: widget.transaction.note,
+          ),
+        ];
+    _controllers = _splits
+        .map(
+          (s) => TextEditingController(
+            text: s.amount > 0 ? s.amount.toStringAsFixed(2) : '',
+          ),
+        )
+        .toList();
+    _noteControllers = _splits
+        .map((s) => TextEditingController(text: s.note))
+        .toList();
+    _focusNodes = _splits.map((_) => FocusNode()).toList();
   }
 
   @override
@@ -73,9 +93,14 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
     super.dispose();
   }
 
-  double get _totalSplitAmount =>
-      _splits.fold(0, (sum, item) => sum + item.amount);
-  double get _remainingAmount => widget.transaction.amount - _totalSplitAmount;
+  int get _remainingCents =>
+      (widget.transaction.amount * 100).round() -
+      _splits.fold<int>(
+        0,
+        (sum, item) =>
+            sum + (item.amount.isFinite ? (item.amount * 100).round() : 0),
+      );
+  double get _remainingAmount => _remainingCents / 100;
 
   void _addSplit() {
     if (_remainingAmount <= 0) return;
@@ -111,7 +136,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isOverLimit = _totalSplitAmount > widget.transaction.amount;
+    final isOverLimit = _remainingCents < 0;
 
     return Container(
       padding: EdgeInsets.only(
@@ -140,26 +165,31 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Distribute Expense',
-                          style: theme.textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Distribute Expense',
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                        Text(
-                          'Original: ${_rupeeFmt.format(widget.transaction.amount)}',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurface.withOpacity(0.5),
+                          Text(
+                            'Original: ${_rupeeFmt.format(widget.transaction.amount)}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface.withOpacity(
+                                0.5,
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                     IconButton(
+                      tooltip: 'Close',
                       onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded),
+                      icon: const Icon(AppIcons.close),
                     ),
                   ],
                 ),
@@ -180,9 +210,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
                   child: Row(
                     children: [
                       Icon(
-                        isOverLimit
-                            ? Icons.error_outline_rounded
-                            : Icons.account_balance_wallet_outlined,
+                        isOverLimit ? AppIcons.error : AppIcons.accounts,
                         color: isOverLimit
                             ? Colors.red
                             : theme.colorScheme.primary,
@@ -236,7 +264,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
               children: [
                 OutlinedButton.icon(
                   onPressed: _addSplit,
-                  icon: const Icon(Icons.add_rounded),
+                  icon: const Icon(AppIcons.add),
                   label: const Text('Add Distribution Part'),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 56),
@@ -247,7 +275,14 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: (_remainingAmount == 0 && !isOverLimit)
+                  onPressed:
+                      (_remainingCents == 0 &&
+                          _splits.every(
+                            (s) =>
+                                s.amount.isFinite &&
+                                (s.amount * 100).round() > 0,
+                          ) &&
+                          !isOverLimit)
                       ? () => widget.onSplit(_splits)
                       : null,
                   style: ElevatedButton.styleFrom(
@@ -303,6 +338,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
                   decoration: InputDecoration(
                     prefixText: '₹ ',
                     labelText: 'Amount',
+                    helperText: item.amount <= 0 ? 'Enter item total' : null,
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -326,7 +362,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  items: _allCategories
+                  items: {..._allCategories, ..._splits.map((s) => s.category)}
                       .map(
                         (c) => DropdownMenuItem(
                           value: c,
@@ -342,10 +378,7 @@ class _SplitExpenseSheetState extends State<SplitExpenseSheet> {
               if (_splits.length > 1)
                 IconButton(
                   onPressed: () => _removeSplit(index),
-                  icon: const Icon(
-                    Icons.remove_circle_outline,
-                    color: Colors.red,
-                  ),
+                  icon: const Icon(AppIcons.remove, color: Colors.red),
                 ),
             ],
           ),

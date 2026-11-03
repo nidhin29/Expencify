@@ -1,5 +1,1 @@
-package com.nidhi.expencify
-
-import io.flutter.embedding.android.FlutterActivity
-
-class MainActivity : FlutterActivity()
+// The activity is implemented in com.example.expencify, matching android.namespace.

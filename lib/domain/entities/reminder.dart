@@ -5,6 +5,7 @@ class Reminder extends Equatable {
   final String title;
   final double amount;
   final DateTime dueDate;
+  final DateTime? recurrenceAnchor;
   final bool isRecurring;
   final String frequency; // 'monthly', 'weekly', 'yearly', 'once'
 
@@ -13,6 +14,7 @@ class Reminder extends Equatable {
     required this.title,
     required this.amount,
     required this.dueDate,
+    this.recurrenceAnchor,
     this.isRecurring = false,
     this.frequency = 'monthly',
   });
@@ -29,6 +31,7 @@ class Reminder extends Equatable {
       'title': title,
       'amount': amount,
       'due_date': dueDate.toIso8601String(),
+      'recurrence_anchor': recurrenceAnchor?.toIso8601String(),
       'is_recurring': isRecurring ? 1 : 0,
       'frequency': frequency,
     };
@@ -40,6 +43,9 @@ class Reminder extends Equatable {
       title: map['title'],
       amount: map['amount'],
       dueDate: DateTime.parse(map['due_date']),
+      recurrenceAnchor: map['recurrence_anchor'] == null
+          ? null
+          : DateTime.parse(map['recurrence_anchor']),
       isRecurring: map['is_recurring'] == 1,
       frequency: map['frequency'] ?? 'monthly',
     );
@@ -51,6 +57,7 @@ class Reminder extends Equatable {
     title,
     amount,
     dueDate,
+    recurrenceAnchor,
     isRecurring,
     frequency,
   ];

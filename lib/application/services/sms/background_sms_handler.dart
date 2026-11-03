@@ -1,11 +1,10 @@
-import 'dart:convert';
-import 'dart:ui';
+import 'sms_account_matcher.dart';
+import 'sms_review_store.dart';
+import 'sms_tracking_preference.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:telephony/telephony.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:collection/collection.dart';
+import 'sms_identity.dart';
+import '../notifications/budget_alert_service.dart';
 import '../sms/sms_parser_service.dart';
 import 'package:expencify/infrastructure/database/database_helper.dart';
 import 'package:expencify/infrastructure/repositories/sqlite_account_repository.dart';
@@ -18,189 +17,77 @@ import 'package:expencify/domain/entities/transaction.dart';
 // Pending SMS Queue — drains any SMS saved by SmsReceiver while app was closed.
 // Call this at app startup to catch SMS received when no Flutter engine was up.
 // ─────────────────────────────────────────────────────────────────────────────
-Future<void> processPendingSms() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
-    final raw = prefs.getString('pending_sms_list');
-    if (raw == null || raw == '[]') return;
+typedef PendingSmsProcessor =
+    Future<bool> Function(String body, DateTime date, String? sender);
 
-    final List<dynamic> list = jsonDecode(raw);
-    if (list.isEmpty) return;
-
-    // Clear immediately to avoid double-processing on concurrent starts
-    await prefs.remove('pending_sms_list');
-
-    debugPrint(
-      '>>> [EXPENCIFY] Draining ${list.length} pending SMS(es) from queue...',
-    );
-
-    for (final item in list) {
-      final body = item['body'] as String? ?? '';
-      final ts =
-          item['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
-      final date = DateTime.fromMillisecondsSinceEpoch(ts);
-      if (body.isNotEmpty) {
-        await processSms(body, date: date);
-      }
-    }
-
-    debugPrint('>>> [EXPENCIFY] Pending SMS queue drained.');
-  } catch (e) {
-    debugPrint('>>> [EXPENCIFY] processPendingSms error: $e');
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Persistent Background Isolate for Native SMS.
-// This isolate stays alive to handle instant capture without engine restarts.
-// ─────────────────────────────────────────────────────────────────────────────
-@pragma('vm:entry-point')
-void onNativeSmsReceived(List<String> args) async {
-  // Necessary for background isolate initialization
-  DartPluginRegistrant.ensureInitialized();
-  WidgetsFlutterBinding.ensureInitialized();
-
-  debugPrint('>>> [EXPENCIFY_BG] Persistent Background Isolate started.');
-
+Future<bool> processPendingSms({PendingSmsProcessor? processor}) async {
   const channel = MethodChannel('com.example.expencify/native_sms');
-
-  // Register handler for incoming SMS data from Kotlin
-  channel.setMethodCallHandler((call) async {
-    if (call.method == 'onSmsReceived') {
-      try {
-        final data = call.arguments as Map;
-        final body = data['body'] as String;
-        final ts = data['timestamp'] as int;
-        final sender = data['sender'] as String;
-
-        final date = DateTime.fromMillisecondsSinceEpoch(ts);
-        debugPrint('>>> [EXPENCIFY_BG] SMS Captured via Channel: $sender');
-        await processSms(body, date: date);
-      } catch (e) {
-        debugPrint('>>> [EXPENCIFY_BG] Channel Error: $e');
+  try {
+    final list =
+        await channel.invokeListMethod<dynamic>('readPendingSms') ?? [];
+    var complete = true;
+    for (final raw in list) {
+      final item = Map<String, dynamic>.from(raw as Map);
+      final body = item['body'] as String;
+      final date = DateTime.fromMillisecondsSinceEpoch(
+        item['timestamp'] as int,
+      );
+      final sender = item['sender'] as String?;
+      final success = processor == null
+          ? await processSms(body, date: date, sender: sender)
+          : await processor(body, date, sender);
+      if (!success) complete = false;
+      if (success) {
+        await channel.invokeMethod<void>('ackPendingSms', {'id': item['id']});
       }
     }
-    return null;
-  });
-
-  // Handle any initial SMS arguments passed at startup
-  if (args.length >= 2) {
-    debugPrint('>>> [EXPENCIFY_BG] Processing initial SMS from startup args');
-    final body = args[1];
-    DateTime? smsDate;
-    if (args.length >= 3) {
-      final ts = int.tryParse(args[2]);
-      if (ts != null) smsDate = DateTime.fromMillisecondsSinceEpoch(ts);
-    }
-    await processSms(body, date: smsDate ?? DateTime.now());
+    return complete;
+  } on MissingPluginException {
+    return false;
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry point for the flutter_foreground_task persistent service isolate.
-// ─────────────────────────────────────────────────────────────────────────────
+/// Started by a bounded job, never directly inside the SMS receiver.
 @pragma('vm:entry-point')
-void startForegroundSmsService() {
-  DartPluginRegistrant.ensureInitialized();
+void smsWorkDispatcher() async {
   WidgetsFlutterBinding.ensureInitialized();
-  FlutterForegroundTask.setTaskHandler(SmsTaskHandler());
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Task handler — anchoring service isolate.
-// ─────────────────────────────────────────────────────────────────────────────
-class SmsTaskHandler extends TaskHandler {
-  final _telephony = Telephony.instance;
-
-  @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    debugPrint('>>> [EXPENCIFY_SVC] Service isolate active');
-
-    // Safety net listener
-    _telephony.listenIncomingSms(
-      onNewMessage: (SmsMessage message) async {
-        debugPrint(
-          '>>> [EXPENCIFY_SVC] SMS received in service: ${message.body}',
-        );
-        final msgDate = message.date != null
-            ? DateTime.fromMillisecondsSinceEpoch(message.date!)
-            : DateTime.now();
-        await processSms(message.body ?? '', date: msgDate);
-
-        // Notify Main isolate via Port for foreground instant renders
-        FlutterForegroundTask.sendDataToMain({'type': 'sms_parsed'});
-      },
-      listenInBackground: false,
-    );
-  }
-
-  @override
-  void onNotificationPressed() {
-    FlutterForegroundTask.launchApp();
-  }
-
-  @override
-  void onRepeatEvent(DateTime timestamp) {
-    processPendingSms().catchError((e) {
-      debugPrint('>>> [EXPENCIFY_SVC] onRepeatEvent error: $e');
-    });
-  }
-
-  @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
-    debugPrint('>>> [EXPENCIFY_SVC] Service isolate stopped');
-  }
+  var success = false;
+  try {
+    success = await processPendingSms();
+  } catch (_) {}
+  await const MethodChannel(
+    'com.example.expencify/native_sms',
+  ).invokeMethod<void>('smsWorkFinished', success);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core SMS processing logic with robust duplicate prevention.
 // ─────────────────────────────────────────────────────────────────────────────
-Future<void> processSms(
+Future<bool> processSms(
   String body, {
   DateTime? date,
+  String? sender,
   bool suppressNotification = false,
 }) async {
-  if (body.isEmpty) return;
+  if (!await SmsTrackingPreference.isEnabled()) return true;
+  if (body.isEmpty) return true;
   final effectiveDate = date ?? DateTime.now();
-
-  // ── ATOMIC SQLITE RACE CONDITION GUARD ──────────────────────────────────
-  final cleanBody = body.trim().replaceAll(RegExp(r'\s+'), ' ');
-  final nowMs = DateTime.now().millisecondsSinceEpoch;
-
-  final db = await DatabaseHelper().database;
-
-  await db.execute('DELETE FROM processed_sms_log WHERE timestamp < ?', [
-    nowMs - 900000, // 15 minutes
-  ]);
-
-  final rowsAffected = await db.rawInsert(
-    '''
-    INSERT INTO processed_sms_log (body, timestamp)
-    SELECT ?, ? WHERE NOT EXISTS (
-      SELECT 1 FROM processed_sms_log 
-      WHERE body = ? AND ABS(? - timestamp) < 600000
-    )
-  ''',
-    [cleanBody, nowMs, cleanBody, nowMs],
-  );
-
-  debugPrint(
-    '>>> [EXPENCIFY] Atomic Lock RowsAffected: $rowsAffected | Body: $cleanBody',
-  );
-
-  if (rowsAffected == 0) {
-    debugPrint(
-      '>>> [EXPENCIFY] Atomic Race Condition Guard Triggered — Duplicate SMS aborted √',
-    );
-    return;
-  }
+  final identity = smsIdentity(body, effectiveDate, sender: sender);
 
   try {
     final Map<String, dynamic>? data = await SmsParserService.parseSms(body);
     if (data == null) {
-      debugPrint('Background SMS Handler: Not a valid bank SMS.');
-      return;
+      if (SmsParserService.needsReview(body) &&
+          await SmsTrackingPreference.isEnabled()) {
+        await SmsReviewStore().add(
+          identity,
+          body,
+          sender,
+          effectiveDate,
+          'Check the amount and whether money came in or went out.',
+        );
+      }
+      return true;
     }
 
     final type = data['type'] as String;
@@ -220,87 +107,23 @@ Future<void> processSms(
     final updatedMerchant = rulesResult['merchant']!;
 
     final accountsList = await accRepo.getAll();
-    if (accountsList.isEmpty) return;
 
-    int accountId;
-    if (lastFour.isNotEmpty) {
-      // Strict match: only save if SMS account matches a registered account
-      final matched = accountsList
-          .where((a) => a.accountNumber.endsWith(lastFour))
-          .toList();
-      if (matched.isEmpty) {
-        debugPrint(
-          '>>> [EXPENCIFY] SMS from unregistered account (****$lastFour) — ignored.',
-        );
-        return; // ← Drop silently; account not added in app
-      }
-      accountId = matched.first.id!;
-    } else {
-      if (accountsList.length > 1) {
-        debugPrint(
-          '>>> [EXPENCIFY] SMS has no account digits and multiple accounts exist — ignored.',
-        );
-        return;
-      }
-
-      final onlyAccount = accountsList.first;
-
-      // 1. Safety Rule: Discard bound to default Cash account
-      if (onlyAccount.bankName.toLowerCase() == 'cash' ||
-          onlyAccount.accountNumber.toUpperCase() == 'CASH') {
-        debugPrint(
-          '>>> [EXPENCIFY] SMS has no account digits and the only account is Cash — ignored.',
-        );
-        return;
-      }
-
-      // 2. Safety Rule: Strict Name Containment Check
-      bool matchesBankName =
-          body.toLowerCase().contains(
-            onlyAccount.bankName.replaceAll(' ', '').toLowerCase(),
-          ) ||
-          body.toLowerCase().contains(onlyAccount.bankName.toLowerCase());
-
-      if (!matchesBankName) {
-        debugPrint(
-          '>>> [EXPENCIFY] SMS has no account digits and didn\'t match account Bank Name (${onlyAccount.bankName}) — ignored.',
-        );
-        return;
-      }
-
-      accountId = onlyAccount.id!;
+    final matched = matchSmsAccount(accountsList, lastFour, body, sender);
+    if (matched == null) {
+      if (!await SmsTrackingPreference.isEnabled()) return true;
+      await SmsReviewStore().add(
+        identity,
+        body,
+        sender,
+        effectiveDate,
+        'Choose the account for this transaction.',
+      );
+      return true;
     }
+    final accountId = matched.id!;
 
-    // ── PERFECT DUPLICATE GUARD ─────────────────────────────────────────────
-    // Uses the exact timestamp (within a 1s window) to identify the same SMS.
-    final db = await DatabaseHelper().database;
-    final startRange = effectiveDate
-        .subtract(const Duration(minutes: 5))
-        .toIso8601String();
-    final endRange = effectiveDate
-        .add(const Duration(minutes: 5))
-        .toIso8601String();
-
-    final existing = await db.query(
-      'transactions',
-      where:
-          'account_id = ? AND amount = ? AND type = ? AND date BETWEEN ? AND ?',
-      whereArgs: [accountId, amount, type, startRange, endRange],
-    );
-
-    debugPrint(
-      '>>> [EXPENCIFY] Duplicate Guard args: Acct=$accountId | Amt=$amount | Type=$type | Range: $startRange to $endRange',
-    );
-    debugPrint(
-      '>>> [EXPENCIFY] Duplicate Guard existing row count: ${existing.length}',
-    );
-
-    if (existing.isNotEmpty) {
-      debugPrint('>>> [EXPENCIFY] Duplicate SMS (Sync/Bg/Main) — ignored.');
-      return;
-    }
-
-    await txnRepo.save(
+    if (!await SmsTrackingPreference.isEnabled()) return true;
+    await txnRepo.saveSms(
       TransactionModel(
         accountId: accountId,
         amount: amount,
@@ -313,102 +136,23 @@ Future<void> processSms(
         isOcr: false,
         isVoice: false,
       ),
+      identity,
     );
 
-    await accRepo.updateBalance(accountId, type == 'income' ? amount : -amount);
-
-    debugPrint(
-      '>>> [EXPENCIFY] ✓ Saved ₹$amount ($type) | Merchant: $updatedMerchant | Date: $effectiveDate',
-    );
-
-    // ── BUDGET THRESHOLD ALERT ──────────────────────────────────────────────
-    try {
-      if (type == 'expense' && category.isNotEmpty) {
-        final budgetRepo = SqliteBudgetRepository(dbHelper);
-        final budgets = await budgetRepo.getAll();
-        final matchedBudget = budgets.firstWhereOrNull(
-          (b) => b.category.toLowerCase() == category.toLowerCase(),
-        );
-
-        if (matchedBudget != null) {
-          final relativeNow = effectiveDate;
-          DateTime startCheck = DateTime(
-            relativeNow.year,
-            relativeNow.month,
-            1,
-          ); // default monthly
-
-          if (matchedBudget.period == 'weekly') {
-            startCheck = relativeNow.subtract(
-              Duration(days: relativeNow.weekday - 1),
-            );
-          } else if (matchedBudget.period == 'yearly') {
-            startCheck = DateTime(relativeNow.year, 1, 1);
-          }
-
-          final rawRows = await txnRepo.getTransactions(
-            accountId: accountId,
-            from: startCheck,
-            type: 'expense',
-            limit: 10,
-          );
-          debugPrint(
-            '>>> [EXPENCIFY] Test Row Count for this period ($startCheck): ${rawRows.length} item(s)',
-          );
-
-          final categoryTotals = await txnRepo.getCategoryTotals(
-            type: 'expense',
-            from: startCheck,
-            accountId: accountId,
-          );
-          final currentSpent =
-              categoryTotals.entries
-                  .firstWhereOrNull(
-                    (e) => e.key.toLowerCase() == category.toLowerCase(),
-                  )
-                  ?.value ??
-              0.0;
-
-          debugPrint(
-            '>>> [EXPENCIFY] CategoryTotals Map keys: ${categoryTotals.keys.toList()} | values: ${categoryTotals.values.toList()}',
-          );
-
-          debugPrint(
-            '>>> [EXPENCIFY] Budget Check for $category: Spent=₹$currentSpent | Limit=₹${matchedBudget.amount} | AccountId=$accountId',
-          );
-
-          if (currentSpent > matchedBudget.amount) {
-            final overAmount = currentSpent - matchedBudget.amount;
-            if (!suppressNotification) {
-              await NotificationService().showInstant(
-                title: '⚠️ Budget Exceeded: $category',
-                body:
-                    'You exceeded limit by ₹${overAmount.toStringAsFixed(0)} (Total: ₹${currentSpent.toStringAsFixed(0)} / Max: ₹${matchedBudget.amount.toStringAsFixed(0)})',
-              );
-              debugPrint(
-                '>>> [EXPENCIFY] Budget Alert triggered for $category',
-              );
-            }
-          }
-        }
+    if (!suppressNotification) {
+      try {
+        await BudgetAlertService(
+          txnRepo,
+          SqliteBudgetRepository(dbHelper),
+          NotificationService(),
+        ).checkBudgets();
+      } catch (_) {
+        /* Do not retry a committed transaction for a notification failure. */
       }
-    } catch (e) {
-      debugPrint('>>> [EXPENCIFY] Budget Alert Error: $e');
     }
-  } catch (e, stack) {
-    debugPrint('>>> [EXPENCIFY] ERROR: $e\n$stack');
+    return true;
+  } catch (e) {
+    debugPrint('SMS processing failed: ${e.runtimeType}');
+    return false;
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Legacy Telephony Isolate Entry Point.
-// ─────────────────────────────────────────────────────────────────────────────
-@pragma('vm:entry-point')
-void onBackgroundSmsReceived(SmsMessage message) async {
-  DartPluginRegistrant.ensureInitialized();
-  WidgetsFlutterBinding.ensureInitialized();
-  final msgDate = message.date != null
-      ? DateTime.fromMillisecondsSinceEpoch(message.date!)
-      : DateTime.now();
-  await processSms(message.body ?? '', date: msgDate);
 }

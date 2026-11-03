@@ -1,5 +1,32 @@
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/page_loading.dart';
+import '../../../application/services/backup/backup_progress.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import 'dart:async';
+import 'package:package_info_plus/package_info_plus.dart';
+import '../../widgets/app_pin_dialog.dart';
+import '../security/lock_screen.dart';
+import '../../../application/services/security/private_file_cleanup.dart';
+import 'budget_updates_screen.dart';
+import 'sms_review_screen.dart';
+import '../setup/sms_tracking_screen.dart';
+import '../../../application/services/sms/sms_tracking_preference.dart';
+import '../../../application/services/sms/sms_monitor_service.dart';
+import 'package:expencify/application/blocs/budget/budget_bloc.dart';
+import 'package:expencify/application/blocs/budget/budget_event.dart';
+import 'package:expencify/application/blocs/goal/goal_bloc.dart';
+import 'package:expencify/application/blocs/goal/goal_event.dart';
+import 'package:expencify/application/blocs/category/category_bloc.dart';
+import 'package:expencify/application/blocs/category/category_event.dart';
+import 'package:expencify/application/blocs/appliance/appliance_bloc.dart';
+import 'package:expencify/application/blocs/appliance/appliance_event.dart';
+import 'package:expencify/application/blocs/reminder/reminder_bloc.dart';
+import 'package:expencify/application/blocs/reminder/reminder_event.dart';
+import 'package:expencify/application/blocs/subscription/subscription_bloc.dart';
+import 'package:expencify/application/blocs/subscription/subscription_event.dart';
+import 'package:expencify/application/blocs/registered_entity/registered_entity_bloc.dart';
+import 'package:expencify/application/blocs/registered_entity/registered_entity_event.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,7 +41,6 @@ import 'package:expencify/application/services/auth/auth_service.dart';
 import 'package:expencify/application/services/csv/csv_service.dart';
 import 'package:expencify/application/services/pdf/pdf_service.dart';
 import 'package:expencify/application/services/security/security_service.dart';
-import 'package:expencify/presentation/screens/settings/smart_rules_screen.dart';
 import 'package:expencify/presentation/screens/settings/transaction_selection_screen.dart';
 import 'package:expencify/presentation/screens/auth/splash_screen.dart';
 import 'package:expencify/domain/repositories/category_repository.dart';
@@ -27,15 +53,26 @@ import 'package:expencify/application/services/backup/google_drive_service.dart'
 
 class SettingsScreen extends StatefulWidget {
   final bool isActive;
-  const SettingsScreen({super.key, this.isActive = false});
+  final AuthService? authService;
+  const SettingsScreen({super.key, this.isActive = false, this.authService});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _authService = AuthService();
+  late final _authService = widget.authService ?? AuthService();
   final _security = SecurityService();
+  bool _backupBusy = false;
+  String _backupStatus = 'Working on your backup…';
+  BackupProgress? _backupProgress;
+  String? _version;
+  bool _settingsLoaded = false;
+  bool _settingsError = false;
+  bool _securityBusy = false;
+  bool _smsTrackingEnabled = false;
+  bool _smsToggleBusy = false;
+  DateTime? _lastCloudBackup;
   bool _appLockEnabled = false;
   bool _biometricEnabled = false;
   bool _biometricAvailable = false;
@@ -44,17 +81,122 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _loadPrefs();
+    unawaited(_loadVersion());
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() => _version = '${info.version} (${info.buildNumber})');
+      }
+    } catch (_) {
+      /* Omit unavailable version metadata. */
+    }
+  }
+
+  void _feedback(String text, {bool error = false}) {
+    if (!mounted) return;
+    final cs = Theme.of(context).colorScheme;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          persist: false,
+          duration: Duration(seconds: error ? 6 : 3),
+          backgroundColor: error ? cs.errorContainer : null,
+          content: Text(
+            text,
+            style: error ? TextStyle(color: cs.onErrorContainer) : null,
+          ),
+        ),
+      );
+  }
+
+  Future<void> _setAppLock(bool enabled) async {
+    if (_securityBusy || _backupBusy) return;
+    setState(() => _securityBusy = true);
+    try {
+      if (enabled && (await _security.getPin())?.isNotEmpty != true) {
+        if (mounted) await _handlePinChange(forceEnable: true);
+      } else {
+        if (!enabled && !await _verifySecurityChange()) return;
+        await _security.setSecurityEnabled(enabled);
+        if (mounted) setState(() => _appLockEnabled = enabled);
+      }
+    } catch (_) {
+      _feedback('Could not update app lock. Please try again.', error: true);
+    } finally {
+      if (mounted) setState(() => _securityBusy = false);
+    }
+  }
+
+  Future<void> _setBiometrics(bool enabled) async {
+    if (_securityBusy || _backupBusy) return;
+    setState(() => _securityBusy = true);
+    try {
+      if (!await _verifySecurityChange()) return;
+      if (enabled && !await _authService.authenticateWithBiometrics()) return;
+      await _security.setBiometricEnabled(enabled);
+      if (mounted) setState(() => _biometricEnabled = enabled);
+    } catch (_) {
+      _feedback('Could not update biometrics. Please try again.', error: true);
+    } finally {
+      if (mounted) setState(() => _securityBusy = false);
+    }
   }
 
   Future<void> _loadPrefs() async {
-    final canBio = await _authService.isBiometricsAvailable();
-    final isLockEnabled = await _security.isSecurityEnabled();
-    final isBioEnabled = await _security.isBiometricEnabled();
-    setState(() {
-      _appLockEnabled = isLockEnabled;
-      _biometricEnabled = isBioEnabled;
-      _biometricAvailable = canBio;
-    });
+    if (mounted) setState(() => _settingsError = false);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastBackup = prefs.getString('last_drive_backup_at');
+      final isLockEnabled = await _security.isSecurityEnabled();
+      final isBioEnabled = await _security.isBiometricEnabled();
+      if (!mounted) return;
+      setState(() {
+        _settingsLoaded = true;
+        _lastCloudBackup = lastBackup == null
+            ? null
+            : DateTime.tryParse(lastBackup);
+        _smsTrackingEnabled =
+            prefs.getBool(SmsTrackingPreference.enabledKey) ?? false;
+        _appLockEnabled = isLockEnabled;
+        _biometricEnabled = isBioEnabled;
+      });
+      // Device capability probing must not delay saved preference values.
+      try {
+        final available = await _authService.isBiometricsAvailable();
+        if (mounted) setState(() => _biometricAvailable = available);
+      } catch (_) {
+        /* No biometric control on unsupported devices. */
+      }
+    } catch (_) {
+      if (mounted) setState(() => _settingsError = true);
+    }
+  }
+
+  Future<void> _setSmsTracking(bool enabled) async {
+    if (_smsToggleBusy) return;
+    setState(() => _smsToggleBusy = true);
+    try {
+      if (enabled) {
+        await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(builder: (_) => const SmsTrackingScreen()),
+        );
+      } else {
+        await SmsMonitorService().stopBackgroundListening();
+      }
+      await _loadPrefs();
+    } catch (_) {
+      _feedback(
+        'Could not update SMS tracking. Please try again.',
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _smsToggleBusy = false);
+    }
   }
 
   Future<void> _showExportDialog() async {
@@ -76,33 +218,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (context, setState) {
           return AlertDialog(
-            title: const Text('Export Transactions'),
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 24,
+            ),
+            title: const Text('Export reports'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Choose filters to customize your export structure.',
+                    'Choose the transactions to include.',
                     style: TextStyle(fontSize: 13, color: Colors.grey),
                   ),
                   const SizedBox(height: 20),
                   DropdownButtonFormField<Account?>(
+                    isExpanded: true,
+                    isDense: false,
+                    itemHeight: null,
                     value: selectedAccount,
+                    selectedItemBuilder: (_) => [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'All accounts',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ...accounts.map(
+                        (a) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '${a.name} (${a.bankName})',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
                     decoration: const InputDecoration(
-                      labelText: 'Select Wallet / Account',
+                      labelText: 'Account',
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(horizontal: 12),
                     ),
                     items: [
                       const DropdownMenuItem<Account?>(
                         value: null,
-                        child: Text('All Accounts'),
+                        child: Text('All accounts'),
                       ),
                       ...accounts.map(
                         (a) => DropdownMenuItem<Account?>(
                           value: a,
-                          child: Text('${a.name} (${a.bankName})'),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              '${a.name} (${a.bankName})',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -110,28 +286,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String?>(
+                    isExpanded: true,
+                    isDense: false,
+                    itemHeight: null,
                     value: selectedType,
                     decoration: const InputDecoration(
-                      labelText: 'Transaction Type',
+                      labelText: 'Transaction type',
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(horizontal: 12),
                     ),
                     items: const [
-                      DropdownMenuItem(value: null, child: Text('All Types')),
+                      DropdownMenuItem(value: null, child: Text('All types')),
                       DropdownMenuItem(
                         value: 'income',
-                        child: Text('Income Only'),
+                        child: Text('Income only'),
                       ),
                       DropdownMenuItem(
                         value: 'expense',
-                        child: Text('Expense Only'),
+                        child: Text('Expense only'),
                       ),
                     ],
                     onChanged: (v) => setState(() => selectedType = v),
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String?>(
+                    isExpanded: true,
+                    isDense: false,
+                    itemHeight: null,
                     value: selectedCategory,
+                    selectedItemBuilder: (_) => [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'All categories',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ...categories.map(
+                        (c) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            c.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
                     decoration: const InputDecoration(
                       labelText: 'Category',
                       border: OutlineInputBorder(),
@@ -140,12 +342,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     items: [
                       const DropdownMenuItem(
                         value: null,
-                        child: Text('All Categories'),
+                        child: Text('All categories'),
                       ),
                       ...categories.map(
                         (c) => DropdownMenuItem(
                           value: c.name,
-                          child: Text(c.name),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              c.name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -156,7 +365,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: () async {
-                        final picked = await showDateRangePicker(
+                        final picked = await showAppDateRangePicker(
                           context: context,
                           firstDate: DateTime(2020),
                           lastDate: DateTime.now().add(
@@ -165,10 +374,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           initialDateRange: dateRange,
                         );
                         if (picked != null) {
-                          setState(() => dateRange = picked);
+                          if (context.mounted) {
+                            setState(() => dateRange = picked);
+                          }
                         }
                       },
-                      icon: const Icon(Icons.date_range_rounded),
+                      icon: const Icon(AppIcons.dateRange),
                       label: Text(
                         dateRange == null
                             ? 'All Time'
@@ -189,10 +400,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'type': selectedType,
                   'category': selectedCategory,
                 }),
-                icon: const Icon(
-                  Icons.table_chart_rounded,
-                  color: Colors.green,
-                ),
+                icon: const Icon(AppIcons.csv, color: Colors.green),
                 label: const Text('CSV', style: TextStyle(color: Colors.green)),
               ),
               TextButton.icon(
@@ -203,10 +411,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'type': selectedType,
                   'category': selectedCategory,
                 }),
-                icon: const Icon(
-                  Icons.picture_as_pdf_rounded,
-                  color: Colors.red,
-                ),
+                icon: const Icon(AppIcons.pdf, color: Colors.red),
                 label: const Text('PDF', style: TextStyle(color: Colors.red)),
               ),
               TextButton(
@@ -242,7 +447,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No transactions found matching filters.'),
+            persist: false,
+            content: Text('No transactions match these filters.'),
           ),
         );
       }
@@ -284,22 +490,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
 
-    if (path == null || !mounted) return;
-
-    // Share the file so user can save/send it anywhere
-    await Share.shareXFiles([
-      XFile(path),
-    ], text: 'Spendy transactions exported as ${format.toUpperCase()}');
+    if (path == null) return;
+    try {
+      if (!mounted) return;
+      await Share.shareXFiles([
+        XFile(path),
+      ], text: 'Spendy transactions exported as ${format.toUpperCase()}');
+    } finally {
+      await const PrivateFileCleanup().removeExport(path);
+    }
   }
 
   Future<void> _handleWipeData() async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Wipe All Data?'),
+        title: const Text('Delete financial data?'),
         content: const Text(
-          'This will permanently delete all your transactions, accounts, budgets and goals. '
-          'All financial data will be gone. This cannot be undone.',
+          'Permanently delete the financial records on this device? This cannot be undone. Your Google Drive backups will remain.',
         ),
         actions: [
           TextButton(
@@ -308,10 +516,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'WIPE DATA',
+            child: Text(
+              'Delete data',
               style: TextStyle(
-                color: Colors.orange,
+                color: _danger(Theme.of(ctx)),
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -326,14 +534,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.remove('selected_account_id');
 
     if (mounted) {
+      _refreshData();
       // Refresh BLoC state so components lose old cached references
       context.read<AccountBloc>().add(LoadAccounts());
       context.read<TransactionBloc>().add(const LoadTransactions());
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('All data wiped. Your account is still active.'),
-          backgroundColor: Colors.orange,
+          persist: false,
+          content: Text('Financial data deleted from this device.'),
         ),
       );
 
@@ -345,425 +554,477 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _handleBackup() async {
-    final success = await BackupService().exportBackup();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            success ? 'Backup created and shared!' : 'Backup failed.',
-          ),
-          backgroundColor: success ? Colors.green : Colors.red,
-        ),
+  void _refreshData() {
+    context.read<AccountBloc>().add(LoadAccounts());
+    context.read<TransactionBloc>().add(const LoadTransactions());
+    context.read<BudgetBloc>().add(LoadBudgets());
+    context.read<GoalBloc>().add(LoadGoals());
+    context.read<CategoryBloc>().add(LoadCategories());
+    context.read<ApplianceBloc>().add(LoadAppliances());
+    context.read<ReminderBloc>().add(LoadReminders());
+    context.read<SubscriptionBloc>().add(LoadSubscriptions());
+    context.read<RegisteredEntityBloc>().add(LoadRegisteredEntities());
+  }
+
+  Future<String?> _backupPassphrase({required bool creating}) =>
+      showDialog<String>(
+        context: context,
+        builder: (_) => BackupPassphraseDialog(creating: creating),
       );
+
+  Future<void> _runBackupAction(
+    String status,
+    Future<void> Function() action, {
+    String failureMessage =
+        'Could not finish this backup operation. Please try again.',
+  }) async {
+    if (_backupBusy) return;
+    setState(() {
+      _backupBusy = true;
+      _backupStatus = status;
+      _backupProgress = null;
+    });
+    try {
+      await action();
+    } catch (_) {
+      _feedback(failureMessage, error: true);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _backupBusy = false;
+          _backupProgress = null;
+        });
+      }
     }
   }
 
-  Future<void> _handleRestore() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Restore Data?'),
-        content: const Text(
-          'This will overwrite all your current transactions, accounts, and settings with the data from the backup file. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'RESTORE',
-              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
+  void _onBackupProgress(BackupProgress progress) {
+    if (!mounted || !_backupBusy) return;
+    setState(() {
+      _backupProgress = progress;
+      _backupStatus = progress.label;
+    });
+  }
+
+  Future<void> _handleBackup() async {
+    final password = await _backupPassphrase(creating: true);
+    if (password == null) return;
+    final success = await BackupService().exportBackup(
+      password,
+      onProgress: _onBackupProgress,
     );
+    _feedback(
+      success
+          ? 'Backup file ready to share'
+          : 'Could not create the backup file. Please try again.',
+      error: !success,
+    );
+  }
+
+  Future<void> _handleRestore() async {
+    final confirm = await _confirmRestore(cloud: false);
 
     if (confirm != true || !mounted) return;
 
-    final success = await BackupService().importBackup();
+    final result = await BackupService().importBackup(
+      onProgress: _onBackupProgress,
+      requestPassword: () async {
+        if (!mounted) return null;
+        return _backupPassphrase(creating: false);
+      },
+    );
     if (mounted) {
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Data restored successfully! Restarting...'),
-            backgroundColor: Colors.green,
-          ),
-        );
+      if (result.restored) {
+        _refreshData();
+        _feedback('Backup restored');
         // Force app reload
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const SplashScreen()),
           (route) => false,
         );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Restore failed or cancelled.'),
-            backgroundColor: Colors.red,
-          ),
+      } else if (!result.cancelled) {
+        _feedback(
+          result.error ??
+              'Restore could not finish. Your current data was not replaced.',
+          error: true,
         );
       }
     }
   }
 
   Future<void> _handleCloudBackup() async {
-    final pin = await _security.getPin();
-    if (!mounted) return;
+    final pin = await _backupPassphrase(creating: true);
+    if (pin == null || !mounted) return;
 
-    if (pin == null || pin.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please enable App Lock and set a PIN first to encrypt your backup.',
-          ),
-        ),
-      );
-      return;
+    final error = await GoogleDriveService().backupDatabase(
+      pin,
+      onProgress: _onBackupProgress,
+    );
+    if (error == null) {
+      final now = DateTime.now();
+      final prefs = await SharedPreferences.getInstance();
+      try {
+        await prefs.setString('last_drive_backup_at', now.toIso8601String());
+      } catch (_) {
+        /* A metadata write does not undo a completed Drive backup. */
+      }
+      if (mounted) setState(() => _lastCloudBackup = now);
     }
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Starting Cloud Backup...')));
-
-    final error = await GoogleDriveService().backupDatabase(pin);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            error == null ? 'Cloud backup successful!' : 'Failed: $error',
-          ),
-          backgroundColor: error == null ? Colors.green : Colors.red,
-          duration: error == null
-              ? const Duration(seconds: 2)
-              : const Duration(seconds: 4),
-        ),
-      );
-    }
+    _feedback(
+      error == null
+          ? 'Backed up to Google Drive'
+          : 'Could not back up to Google Drive. $error',
+      error: error != null,
+    );
   }
 
   Future<void> _handleCloudRestore() async {
-    final pin = await _security.getPin();
-    if (!mounted) return;
+    if (!await _confirmRestore(cloud: true) || !mounted) return;
+    final pin = await _backupPassphrase(creating: false);
+    if (pin == null || !mounted) return;
 
-    if (pin == null || pin.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enter your PIN to decrypt the cloud backup.'),
-        ),
-      );
-      return;
-    }
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Restore from Cloud?'),
-        content: const Text(
-          'This will replace your local data with the backup from Google Drive. Your current data will be lost.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('RESTORE', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
+    final error = await GoogleDriveService().restoreDatabase(
+      pin,
+      onProgress: _onBackupProgress,
     );
-
-    if (confirm != true || !mounted) return;
-
-    final error = await GoogleDriveService().restoreDatabase(pin);
 
     if (mounted) {
       if (error == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Data restored successfully! Restarting...'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        _refreshData();
+        _feedback('Backup restored');
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const SplashScreen()),
           (route) => false,
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Restore failed: $error'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4),
-          ),
+        _feedback(
+          'Could not restore the Google Drive backup. $error',
+          error: true,
         );
       }
     }
   }
 
   Future<void> _handlePinChange({bool forceEnable = false}) async {
-    final formKey = GlobalKey<FormState>();
-    final pinCtrl = TextEditingController();
-    final confirmCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Set New PIN'),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: pinCtrl,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                decoration: const InputDecoration(labelText: 'New PIN'),
-                validator: (v) =>
-                    (v == null || v.length < 4) ? 'Min 4 digits' : null,
-              ),
-              TextFormField(
-                controller: confirmCtrl,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                decoration: const InputDecoration(labelText: 'Confirm PIN'),
-                validator: (v) =>
-                    v != pinCtrl.text ? 'PINs do not match' : null,
-              ),
-            ],
-          ),
+    if (!forceEnable && (_securityBusy || _backupBusy)) return;
+    if (!forceEnable) setState(() => _securityBusy = true);
+    try {
+      if (!forceEnable && !await _verifySecurityChange()) return;
+      if (!mounted) return;
+      final saved = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AppPinDialog(
+          title: forceEnable ? 'Set app PIN' : 'Change app PIN',
+          onSave: (pin) async {
+            await _security.setPin(pin);
+            if (forceEnable) await _security.setSecurityEnabled(true);
+          },
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (!formKey.currentState!.validate()) return;
-              await _security.setPin(pinCtrl.text);
-              if (ctx.mounted) {
-                Navigator.pop(ctx);
-                if (forceEnable) {
-                  await _security.setSecurityEnabled(true);
-                  if (mounted) setState(() => _appLockEnabled = true);
-                }
-                if (mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text('PIN updated!')));
-                }
-              }
-            },
-            child: const Text('Save'),
-          ),
-        ],
+      );
+      if (saved == true && mounted) {
+        if (forceEnable) setState(() => _appLockEnabled = true);
+        _feedback('PIN updated');
+      }
+    } finally {
+      if (!forceEnable && mounted) setState(() => _securityBusy = false);
+    }
+  }
+
+  Future<bool> _verifySecurityChange() async {
+    if (!await _security.isSecurityEnabled()) return true;
+    if (!mounted) return false;
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog.fullscreen(
+        child: LockScreen(
+          verificationOnly: true,
+          authService: _authService,
+          securityService: _security,
+          onUnlocked: () => Navigator.pop(ctx, true),
+          onCancelled: () => Navigator.pop(ctx, false),
+        ),
       ),
     );
+    return result == true && mounted && _security.isForeground;
   }
+
+  Future<bool> _confirmRestore({required bool cloud}) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Restore backup?'),
+          content: Text(
+            'Replace the financial data on this device with ${cloud ? 'your Google Drive backup' : 'a backup file'}? This cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error,
+                foregroundColor: Theme.of(ctx).colorScheme.onError,
+              ),
+              child: const Text('Restore backup'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
 
   Future<void> _launchUrl(String urlString) async {
     final uri = Uri.parse(urlString);
     try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open link: $e')),
-        );
-      }
+      if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
+    } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          persist: false,
+          content: Text('Could not open this link. Please try again.'),
+        ),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Scaffold(
-      backgroundColor: theme.colorScheme.surface,
-      appBar: AppBar(
-        systemOverlayStyle: SystemUiOverlayStyle(
-          statusBarColor: Colors.transparent,
-          statusBarIconBrightness: theme.brightness == Brightness.dark
-              ? Brightness.light
-              : Brightness.dark,
-          statusBarBrightness: theme.brightness, // For iOS
-        ),
-        title: const Text('Settings'),
-        backgroundColor: Colors.transparent,
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(24),
-        children: [
-          _buildGroup(theme, 'Data Management', [
-            _buildTile(
-              theme,
-              Icons.file_download_rounded,
-              'Export Data (CSV / PDF)',
-              _showExportDialog,
-            ),
-            _buildTile(
-              theme,
-              Icons.auto_awesome_rounded,
-              'Smart Rules (SMS Auto-categorize)',
-              () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const SmartRulesScreen()),
-                );
-              },
-            ),
-            _buildTile(
-              theme,
-              Icons.play_circle_outline_rounded,
-              'Replay App Tutorials',
-              () async {
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setBool('home_tutorial_shown', false);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Tutorials reset! Navigate to tabs to see them.',
-                      ),
-                      duration: Duration(seconds: 2),
+    final cs = theme.colorScheme;
+    return PopScope(
+      canPop: !_backupBusy,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Settings')),
+        bottomNavigationBar: _backupBusy
+            ? SafeArea(
+                top: false,
+                child: Material(
+                  color: cs.surface,
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        LinearProgressIndicator(
+                          value: _backupProgress?.fraction,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 16,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.sync_rounded,
+                                color: _accent(theme),
+                                size: 22,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _backupStatus,
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                  );
-                }
-              },
-            ),
-            _buildTile(
-              theme,
-              Icons.delete_sweep_rounded,
-              'Wipe All Data',
-              _handleWipeData,
-              color: Colors.orange,
-              subtitle: 'Clears transactions & accounts',
-            ),
-          ]),
-          const SizedBox(height: 24),
-          _buildGroup(theme, 'Backup & Restore', [
-            _buildTile(
-              theme,
-              Icons.cloud_upload_rounded,
-              'Create Full Backup',
-              _handleBackup,
-              subtitle: 'Export data to transfer to another phone',
-            ),
-            _buildTile(
-              theme,
-              Icons.cloud_download_rounded,
-              'Restore from Backup',
-              _handleRestore,
-              subtitle: 'Import data from an existing backup file',
-            ),
-          ]),
-          const SizedBox(height: 24),
-          _buildGroup(theme, 'Google Cloud Sync', [
-            _buildTile(
-              theme,
-              Icons.backup_rounded,
-              'Backup to Google Drive',
-              _handleCloudBackup,
-              subtitle: 'Encrypted backup to your Google account',
-            ),
-            _buildTile(
-              theme,
-              Icons.settings_backup_restore_rounded,
-              'Restore from Google Drive',
-              _handleCloudRestore,
-              subtitle: 'Download and decrypt cloud backup',
-            ),
-          ]),
-          const SizedBox(height: 24),
-          _buildGroup(theme, 'Security', [
-            _buildSwitchTile(
-              theme,
-              Icons.lock_outline_rounded,
-              'Enable App Lock',
-              _appLockEnabled,
-              (v) async {
-                // If enabling, ensure a PIN exists
-                if (v) {
-                  final pin = await _security.getPin();
-                  if (pin == null || pin.isEmpty) {
-                    _handlePinChange(forceEnable: true); // Force set PIN
-                    return;
-                  }
-                }
-                await _security.setSecurityEnabled(v);
-                setState(() => _appLockEnabled = v);
-              },
-            ),
-            if (_appLockEnabled && _biometricAvailable)
+                  ),
+                ),
+              )
+            : null,
+        body: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+          children: [
+            if (_settingsError)
+              MaterialBanner(
+                content: const Text('Could not load saved settings.'),
+                actions: [
+                  TextButton(onPressed: _loadPrefs, child: const Text('Retry')),
+                ],
+              ),
+            _buildGroup(theme, 'Tracking', [
               _buildSwitchTile(
                 theme,
-                Icons.fingerprint_rounded,
-                'Use Biometrics',
-                _biometricEnabled,
-                (v) async {
-                  if (v) await _authService.authenticateWithBiometrics();
-                  await _security.setBiometricEnabled(v);
-                  setState(() => _biometricEnabled = v);
-                },
+                Icons.sms_outlined,
+                'Track bank SMS',
+                _smsTrackingEnabled,
+                _setSmsTracking,
+                enabled: _settingsLoaded && !_smsToggleBusy,
+                subtitle: _smsToggleBusy ? 'Updating SMS tracking…' : null,
               ),
-            if (_appLockEnabled)
               _buildTile(
                 theme,
-                Icons.vpn_key_rounded,
-                'Change PIN',
-                _handlePinChange,
+                Icons.fact_check_outlined,
+                'SMS to review',
+                () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SmsReviewScreen()),
+                ),
               ),
-          ]),
-          const SizedBox(height: 24),
-          _buildGroup(theme, 'About & Legal', [
-            _buildTile(
-              theme,
-              Icons.privacy_tip_rounded,
-              'Privacy Policy',
-              () => _launchUrl('https://spendy-privacy.devforchange.com/'),
-              subtitle: 'How we protect your offline data',
-            ),
-            _buildTile(
-              theme,
-              Icons.description_rounded,
-              'Terms and Conditions',
-              () => _launchUrl('https://spendy-terms.devforchange.com/'),
-              subtitle: 'Usage guidelines and disclaimers',
-            ),
-          ]),
-          const SizedBox(height: 60),
-          Center(
-            child: Text(
-              'Spendy v1.0.0\nAll financial data is stored locally on your device.',
+              _buildTile(
+                theme,
+                Icons.notifications_active_outlined,
+                'Spending updates',
+                () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const BudgetUpdatesScreen(),
+                  ),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 24),
+            _buildGroup(theme, 'Security', [
+              _buildSwitchTile(
+                theme,
+                Icons.lock_outline_rounded,
+                'App lock',
+                _appLockEnabled,
+                _setAppLock,
+                enabled: _settingsLoaded && !_securityBusy,
+              ),
+              if (_appLockEnabled && _biometricAvailable)
+                _buildSwitchTile(
+                  theme,
+                  Icons.fingerprint_rounded,
+                  'Use device unlock',
+                  _biometricEnabled,
+                  _setBiometrics,
+                  enabled: !_securityBusy,
+                ),
+              if (_appLockEnabled)
+                _buildTile(
+                  theme,
+                  Icons.pin_outlined,
+                  'Change PIN',
+                  _handlePinChange,
+                ),
+            ]),
+            const SizedBox(height: 24),
+            _buildGroup(theme, 'Data & backups', [
+              _buildTile(
+                theme,
+                Icons.file_upload_outlined,
+                'Create backup file',
+                () => _runBackupAction('Creating backup file…', _handleBackup),
+                subtitle: 'Encrypted · protected by your backup passphrase',
+              ),
+              _buildTile(
+                theme,
+                Icons.file_open_outlined,
+                'Restore backup file',
+                () =>
+                    _runBackupAction('Restoring backup file…', _handleRestore),
+                subtitle: 'Restore from a saved file',
+              ),
+              _buildTile(
+                theme,
+                Icons.cloud_upload_outlined,
+                'Back up to Google Drive',
+                () => _runBackupAction(
+                  'Backing up to Google Drive…',
+                  _handleCloudBackup,
+                ),
+                subtitle: !_settingsLoaded
+                    ? (_settingsError
+                          ? 'Backup status unavailable'
+                          : 'Checking backup status…')
+                    : _lastCloudBackup == null
+                    ? 'Not backed up from this device'
+                    : 'Last backup from this device: ${DateFormat('d MMM, h:mm a').format(_lastCloudBackup!)}',
+              ),
+              _buildTile(
+                theme,
+                Icons.cloud_download_outlined,
+                'Restore from Google Drive',
+                () => _runBackupAction(
+                  'Restoring from Google Drive…',
+                  _handleCloudRestore,
+                ),
+              ),
+              _buildTile(
+                theme,
+                Icons.ios_share_rounded,
+                'Export reports',
+                _showExportDialog,
+                subtitle: 'CSV or PDF · not encrypted',
+              ),
+            ]),
+            const SizedBox(height: 24),
+            _buildGroup(theme, 'About Spendy', [
+              _buildTile(
+                theme,
+                Icons.privacy_tip_outlined,
+                'Privacy policy',
+                () => _launchUrl('https://spendy-privacy.devforchange.com/'),
+              ),
+              _buildTile(
+                theme,
+                Icons.description_outlined,
+                'Terms and conditions',
+                () => _launchUrl('https://spendy-terms.devforchange.com/'),
+              ),
+            ]),
+            const SizedBox(height: 24),
+            _buildGroup(theme, 'Delete data', [
+              _buildTile(
+                theme,
+                AppIcons.delete,
+                'Delete financial data',
+                () => _runBackupAction(
+                  'Deleting financial data…',
+                  _handleWipeData,
+                  failureMessage:
+                      'Could not delete financial data. Please try again.',
+                ),
+                color: _danger(theme),
+                subtitle: 'Permanently remove records from this device',
+              ),
+            ]),
+            const SizedBox(height: 28),
+            Text(
+              _version == null ? 'Spendy' : 'Spendy $_version',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.5),
+                color: cs.onSurfaceVariant,
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 6),
+            Text(
+              'On-device storage · Optional Drive backups',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  Color _accent(ThemeData theme) => AppIcons.actionColor(theme);
+  Color _danger(ThemeData theme) => AppIcons.dangerColor(theme);
 
   Widget _buildGroup(ThemeData theme, String title, List<Widget> tiles) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          title.toUpperCase(),
+          title,
           style: theme.textTheme.labelLarge?.copyWith(
-            color: theme.colorScheme.primary,
+            color: _accent(theme),
             fontWeight: FontWeight.bold,
-            letterSpacing: 1.2,
+            letterSpacing: .1,
           ),
         ),
         const SizedBox(height: 12),
@@ -778,7 +1039,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 8),
             ],
           ),
-          child: Column(children: tiles),
+          child: Material(
+            type: MaterialType.transparency,
+            borderRadius: BorderRadius.circular(20),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                for (var i = 0; i < tiles.length; i++) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 1,
+                      indent: 64,
+                      endIndent: 16,
+                      color: theme.colorScheme.outlineVariant.withValues(
+                        alpha: .45,
+                      ),
+                    ),
+                  tiles[i],
+                ],
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -793,8 +1074,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     String? subtitle,
   }) {
     return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-      leading: Icon(icon, color: color ?? theme.colorScheme.primary),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      leading: Icon(icon, color: color ?? _accent(theme)),
       title: Text(
         title,
         style: theme.textTheme.bodyLarge?.copyWith(
@@ -806,15 +1087,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? Text(
               subtitle,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.45),
+                color: theme.colorScheme.onSurface.withOpacity(0.75),
               ),
             )
           : null,
       trailing: Icon(
-        Icons.chevron_right_rounded,
+        AppIcons.chevron,
         color: theme.colorScheme.onSurface.withOpacity(0.4),
       ),
-      onTap: onTap,
+      enabled: !_backupBusy,
+      onTap: _backupBusy ? null : onTap,
     );
   }
 
@@ -823,20 +1105,145 @@ class _SettingsScreenState extends State<SettingsScreen> {
     IconData icon,
     String title,
     bool value,
-    void Function(bool) onChanged,
-  ) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-      leading: Icon(icon, color: theme.colorScheme.primary),
+    void Function(bool) onChanged, {
+    bool enabled = true,
+    String? subtitle,
+  }) {
+    if (!_settingsLoaded) {
+      return ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        leading: Icon(icon, color: _accent(theme)),
+        title: Text(
+          title,
+          style: theme.textTheme.bodyLarge?.copyWith(
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        trailing: _settingsError
+            ? Icon(AppIcons.error, color: theme.colorScheme.onSurfaceVariant)
+            : const PendingSetting(),
+      );
+    }
+    return SwitchListTile.adaptive(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      secondary: Icon(icon, color: _accent(theme)),
       title: Text(
         title,
         style: theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w500),
       ),
-      trailing: Switch(
-        value: value,
-        onChanged: onChanged,
-        activeColor: theme.colorScheme.primary,
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle, style: theme.textTheme.bodySmall),
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? theme.colorScheme.onSurface.withValues(alpha: .38)
+            : states.contains(WidgetState.selected)
+            ? Colors.white
+            : theme.colorScheme.onSurfaceVariant,
       ),
+      trackColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? theme.colorScheme.onSurface.withValues(alpha: .08)
+            : states.contains(WidgetState.selected)
+            ? theme.colorScheme.primary
+            : theme.colorScheme.onSurface.withValues(alpha: .10),
+      ),
+      trackOutlineColor: WidgetStatePropertyAll(
+        theme.colorScheme.onSurface.withValues(alpha: .18),
+      ),
+      value: value,
+      onChanged: !_backupBusy && enabled ? onChanged : null,
     );
   }
+}
+
+/// The dialog owns its controllers through its complete closing animation.
+class BackupPassphraseDialog extends StatefulWidget {
+  final bool creating;
+  const BackupPassphraseDialog({super.key, required this.creating});
+  @override
+  State<BackupPassphraseDialog> createState() => _BackupPassphraseDialogState();
+}
+
+class _BackupPassphraseDialogState extends State<BackupPassphraseDialog> {
+  final _passphrase = TextEditingController();
+  final _confirmation = TextEditingController();
+  bool _obscured = true;
+  String? _error;
+  @override
+  void dispose() {
+    _passphrase.dispose();
+    _confirmation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.creating ? 'Protect your backup' : 'Unlock your backup'),
+    scrollable: true,
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.creating
+              ? 'Choose a separate passphrase of at least 12 characters. You will need it on any phone where you restore. The app cannot recover it.'
+              : 'Enter this backup’s passphrase. Older cloud backups use the PIN from when they were created. Leave blank only for old unencrypted local backups.',
+        ),
+        const SizedBox(height: 20),
+        TextField(
+          controller: _passphrase,
+          obscureText: _obscured,
+          autocorrect: false,
+          enableSuggestions: false,
+          textInputAction: widget.creating
+              ? TextInputAction.next
+              : TextInputAction.done,
+          decoration: InputDecoration(
+            labelText: 'Backup passphrase',
+            errorText: _error,
+            suffixIcon: IconButton(
+              tooltip: _obscured ? 'Show passphrase' : 'Hide passphrase',
+              onPressed: () => setState(() => _obscured = !_obscured),
+              icon: Icon(
+                _obscured
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined,
+              ),
+            ),
+          ),
+        ),
+        if (widget.creating) ...[
+          const SizedBox(height: 16),
+          TextField(
+            controller: _confirmation,
+            obscureText: _obscured,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: const InputDecoration(labelText: 'Confirm passphrase'),
+          ),
+        ],
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (widget.creating &&
+              (_passphrase.text.length < 12 ||
+                  _passphrase.text != _confirmation.text)) {
+            setState(
+              () => _error = 'Use 12+ characters and matching passphrases.',
+            );
+            return;
+          }
+          Navigator.pop(context, _passphrase.text);
+        },
+        child: Text(widget.creating ? 'Encrypt backup' : 'Unlock backup'),
+      ),
+    ],
+  );
 }

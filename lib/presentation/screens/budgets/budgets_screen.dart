@@ -1,7 +1,16 @@
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../widgets/centered_empty_state.dart';
+import '../../../application/services/notifications/budget_period.dart';
+import '../settings/budget_updates_screen.dart';
+import 'dart:async';
+import '../../widgets/form_save_button.dart';
+import '../../../application/services/notifications/notification_service.dart';
+import '../../widgets/budget_welcome_card.dart';
+import '../../widgets/finance_summary_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
-import 'dart:async';
 import 'package:collection/collection.dart';
 import 'package:expencify/application/services/sms/sms_monitor_service.dart';
 import 'package:expencify/application/blocs/transaction/transaction_bloc.dart';
@@ -16,7 +25,6 @@ import 'package:expencify/application/blocs/budget/budget_event.dart';
 import 'package:expencify/application/blocs/budget/budget_state.dart';
 import 'package:expencify/application/blocs/account/account_bloc.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
-
 
 class BudgetScreen extends StatefulWidget {
   final VoidCallback? onRefresh;
@@ -33,6 +41,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
     symbol: '₹',
     decimalDigits: 0,
   );
+  final Map<Budget, Future<double>> _spentCache = {};
   String _period = 'monthly';
   int? _lastAccountId;
   StreamSubscription? _smsSub;
@@ -57,25 +66,28 @@ class _BudgetScreenState extends State<BudgetScreen> {
         ? accountState.selectedAccountId
         : null;
     _lastAccountId = selectedId;
+    _spentCache.clear();
 
-    context.read<BudgetBloc>().add(LoadBudgets(period: _period));
-  }
-
-  DateTime _getFromDate() {
-    final now = DateTime.now();
-    if (_period == 'weekly') return now.subtract(const Duration(days: 7));
-    if (_period == 'yearly') return DateTime(now.year, 1, 1);
-    return DateTime(now.year, now.month, 1);
+    final bloc = context.read<BudgetBloc>();
+    await waitForPageLoad(
+      bloc.stream,
+      (state) =>
+          state is BudgetError || (state is BudgetLoaded && !state.refreshing),
+      () => bloc.add(LoadBudgets(period: _period)),
+    );
   }
 
   Future<double> _getSpentForBudget(Budget b) async {
-    final targetAccountId = b.accountId ?? _lastAccountId;
+    final now = DateTime.now();
+    if (b.startDate.isAfter(now)) return 0;
+    final (start, _) = budgetPeriod(b.period, now);
     final totals = await context
         .read<TransactionRepository>()
         .getCategoryTotals(
           type: 'expense',
-          from: _getFromDate(),
-          accountId: targetAccountId,
+          from: b.startDate.isAfter(start) ? b.startDate : start,
+          to: now,
+          accountId: b.accountId,
         );
     return totals.entries
             .firstWhereOrNull(
@@ -97,7 +109,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
   Future<void> _showBudgetModal({Budget? existing}) async {
     final formKey = GlobalKey<FormState>();
     final amountCtrl = TextEditingController(
-      text: existing?.amount.toStringAsFixed(0) ?? '',
+      text: existing?.amount.toStringAsFixed(2) ?? '',
     );
     String? selectedCat = existing?.category;
     int? selectedAccountId = existing?.accountId;
@@ -139,8 +151,9 @@ class _BudgetScreenState extends State<BudgetScreen> {
                       ),
                     ),
                     IconButton(
+                      tooltip: 'Close',
                       onPressed: () => Navigator.pop(ctx),
-                      icon: const Icon(Icons.close_rounded),
+                      icon: const Icon(AppIcons.close),
                     ),
                   ],
                 ),
@@ -170,7 +183,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                     return _buildDropdown(
                       label: 'Account (Optional)',
                       value: selectedAccountId?.toString(),
-                      icon: Icons.account_balance_wallet_outlined,
+                      icon: AppIcons.accounts,
                       items: [
                         const DropdownMenuItem(
                           value: null,
@@ -200,16 +213,20 @@ class _BudgetScreenState extends State<BudgetScreen> {
                   keyboardType: TextInputType.number,
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'Required';
-                    if (double.tryParse(v) == null) return 'Invalid';
+                    final amount = double.tryParse(v);
+                    if (amount == null || !amount.isFinite || amount <= 0) {
+                      return 'Enter an amount greater than zero';
+                    }
                     return null;
                   },
                 ),
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      if (!formKey.currentState!.validate()) return;
+                  child: FormSaveButton(
+                    onSaved: () => Navigator.pop(ctx),
+                    onSave: () async {
+                      if (!formKey.currentState!.validate()) return null;
                       final b = Budget(
                         id: existing?.id,
                         category: selectedCat!,
@@ -218,8 +235,13 @@ class _BudgetScreenState extends State<BudgetScreen> {
                         startDate: existing?.startDate ?? DateTime.now(),
                         accountId: selectedAccountId,
                       );
-                      context.read<BudgetBloc>().add(SaveBudget(b));
-                      if (ctx.mounted) Navigator.pop(ctx);
+                      await NotificationService().requestPermission();
+                      if (!mounted) return null;
+                      final completion = Completer<bool>();
+                      context.read<BudgetBloc>().add(
+                        SaveBudget(b, completion: completion),
+                      );
+                      return completion.future;
                     },
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -318,7 +340,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
           validator: validator,
           decoration: InputDecoration(
             prefixIcon: Icon(
-              icon ?? Icons.category_outlined,
+              icon ?? AppIcons.categories,
               size: 20,
               color: theme.colorScheme.primary,
             ),
@@ -367,49 +389,104 @@ class _BudgetScreenState extends State<BudgetScreen> {
           backgroundColor: Colors.transparent,
           actions: [
             IconButton(
-              icon: const Icon(Icons.add_rounded),
-              onPressed: _showBudgetModal,
+              tooltip: 'Spending updates',
+              icon: const Icon(AppIcons.reminder),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BudgetUpdatesScreen()),
+              ),
+            ),
+            BlocBuilder<BudgetBloc, BudgetState>(
+              builder: (context, state) {
+                if (state is! BudgetLoaded ||
+                    _visibleBudgets(state.budgets).isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return IconButton(
+                  tooltip: 'Create budget',
+                  icon: const Icon(AppIcons.add),
+                  onPressed: _showBudgetModal,
+                );
+              },
             ),
           ],
         ),
-        body: BlocBuilder<BudgetBloc, BudgetState>(
-          builder: (context, state) {
-            if (state is BudgetLoading) {
-              return const Center(child: CircularProgressIndicator());
-            } else if (state is BudgetLoaded) {
-              final budgets = state.budgets;
-              final showAll = _lastAccountId == null;
-              final visibleBudgets = budgets.where((b) {
-                final matchesAccount =
-                    showAll ||
-                    b.accountId == null ||
-                    b.accountId == _lastAccountId;
-                final matchesPeriod =
-                    b.period.toLowerCase() == _period.toLowerCase();
-                return matchesAccount && matchesPeriod;
-              }).toList();
+        body: RefreshFeedback<BudgetBloc, BudgetState>(
+          onRetry: _load,
+          child: BlocBuilder<BudgetBloc, BudgetState>(
+            builder: (context, state) {
+              if (state is BudgetLoading || state is BudgetInitial) {
+                return const PageLoading(
+                  label: 'Loading budget',
+                  summary: true,
+                );
+              } else if (state is BudgetLoaded) {
+                final visibleBudgets = _visibleBudgets(state.budgets);
 
-              return RefreshIndicator(
-                onRefresh: _load,
-                child: ListView(
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    _buildPeriodSelector(theme),
-                    const SizedBox(height: 20),
-                    if (visibleBudgets.isEmpty) _buildEmpty(theme),
-                    ...visibleBudgets.map((b) => _buildBudgetCard(theme, b)),
-                  ],
-                ),
-              );
-            } else if (state is BudgetError) {
-              return Center(child: Text(state.message));
-            }
-            return _buildEmpty(theme);
-          },
+                if (visibleBudgets.isEmpty) {
+                  return Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+                        child: _buildPeriodSelector(theme),
+                      ),
+                      Expanded(
+                        child: RefreshIndicator(
+                          onRefresh: _load,
+                          child: CenteredEmptyState(
+                            padding: const EdgeInsets.all(20),
+                            child: _buildEmpty(theme),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                }
+                return RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(20),
+                    children: [
+                      _buildPeriodSelector(theme),
+                      const SizedBox(height: 20),
+                      FinanceSummaryCard(
+                        label: 'Planned spending limits',
+                        value: _rupeeFmt.format(
+                          visibleBudgets.fold<double>(
+                            0,
+                            (total, budget) => total + budget.amount,
+                          ),
+                        ),
+                        caption:
+                            '${visibleBudgets.length} ${_period.toLowerCase()} ${visibleBudgets.length == 1 ? 'category limit' : 'category limits'}',
+                        icon: AppIcons.budget,
+                      ),
+                      const SizedBox(height: 24),
+                      ...visibleBudgets.map((b) => _buildBudgetCard(theme, b)),
+                    ],
+                  ),
+                );
+              } else if (state is BudgetError) {
+                return PageLoadFailure(onRetry: _load);
+              }
+              return CenteredEmptyState(child: _buildEmpty(theme));
+            },
+          ),
         ),
       ),
     );
   }
+
+  List<Budget> _visibleBudgets(List<Budget> budgets) => budgets
+      .where(
+        (budget) =>
+            (_lastAccountId == null ||
+                budget.accountId == null ||
+                budget.accountId == _lastAccountId) &&
+            budget.period.toLowerCase() == _period.toLowerCase(),
+      )
+      .toList();
 
   Widget _buildPeriodSelector(ThemeData theme) {
     final dark = theme.brightness == Brightness.dark;
@@ -457,9 +534,10 @@ class _BudgetScreenState extends State<BudgetScreen> {
 
   Widget _buildBudgetCard(ThemeData theme, Budget b) {
     return FutureBuilder<double>(
-      future: _getSpentForBudget(b),
+      future: _spentCache.putIfAbsent(b, () => _getSpentForBudget(b)),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
             height: 120,
@@ -472,10 +550,22 @@ class _BudgetScreenState extends State<BudgetScreen> {
                     : AppTheme.lightBorder,
               ),
             ),
-            child: const Center(child: CircularProgressIndicator()),
+            child: const PageLoading(label: 'Loading budget spending'),
           );
         }
 
+        if (snapshot.hasError) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SizedBox(
+              height: 180,
+              child: PageLoadFailure(
+                onRetry: _load,
+                message: 'Could not load budget spending.',
+              ),
+            ),
+          );
+        }
         final spent = snapshot.data ?? 0.0;
         final progress = (spent / b.amount).clamp(0.0, 1.0);
         final isOver = spent > b.amount;
@@ -493,7 +583,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
             ),
             alignment: Alignment.centerRight,
             padding: const EdgeInsets.only(right: 20),
-            child: const Icon(Icons.delete_rounded, color: Colors.white),
+            child: const Icon(AppIcons.delete, color: Colors.white),
           ),
           onDismissed: (_) async {
             context.read<BudgetBloc>().add(DeleteBudget(b.id!));
@@ -531,7 +621,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                               GestureDetector(
                                 onTap: () => _showBudgetModal(existing: b),
                                 child: Icon(
-                                  Icons.edit_rounded,
+                                  AppIcons.edit,
                                   size: 14,
                                   color: theme.colorScheme.onSurface
                                       .withOpacity(0.2),
@@ -563,7 +653,7 @@ class _BudgetScreenState extends State<BudgetScreen> {
                           ],
                           const SizedBox(height: 4),
                           Text(
-                            '${b.period.capitalize()} · ${(progress * 100).toStringAsFixed(0)}% used',
+                            '${b.period.capitalize()} · ${(progress * 100).toStringAsFixed(2)}% used',
                             style: theme.textTheme.bodySmall,
                           ),
                         ],
@@ -612,36 +702,8 @@ class _BudgetScreenState extends State<BudgetScreen> {
     );
   }
 
-  Widget _buildEmpty(ThemeData theme) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          children: [
-            Icon(
-              Icons.pie_chart_outline_rounded,
-              size: 60,
-              color: theme.colorScheme.primary.withOpacity(0.2),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No budgets yet',
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.4),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Tap + to set spending limits',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withOpacity(0.3),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget _buildEmpty(ThemeData theme) =>
+      BudgetWelcomeCard(onCreate: () => _showBudgetModal());
 }
 
 extension StringCap on String {

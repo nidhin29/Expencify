@@ -1,3 +1,4 @@
+import '../refresh_status.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/subscription.dart';
 
@@ -12,17 +13,28 @@ class SubscriptionInitial extends SubscriptionState {}
 
 class SubscriptionLoading extends SubscriptionState {}
 
-class SubscriptionLoaded extends SubscriptionState {
+class SubscriptionLoaded extends SubscriptionState implements RefreshStatus {
+  @override
+  final bool refreshing;
+  @override
+  final String? refreshError;
   final List<SubscriptionModel> subscriptions;
   final List<SubscriptionModel> potentials;
 
   const SubscriptionLoaded({
     required this.subscriptions,
+    this.refreshing = false,
+    this.refreshError,
     this.potentials = const [],
   });
 
   @override
-  List<Object?> get props => [subscriptions, potentials];
+  List<Object?> get props => [
+    refreshing,
+    refreshError,
+    subscriptions,
+    potentials,
+  ];
 }
 
 class SubscriptionError extends SubscriptionState {

@@ -17,7 +17,8 @@ class SqliteReminderRepository implements ReminderRepository {
   @override
   Future<int> save(Reminder reminder) async {
     if (reminder.id != null) {
-      return await _db.update('reminders', reminder.toMap(), reminder.id!);
+      await _db.update('reminders', reminder.toMap(), reminder.id!);
+      return reminder.id!;
     } else {
       return await _db.insert('reminders', reminder.toMap());
     }

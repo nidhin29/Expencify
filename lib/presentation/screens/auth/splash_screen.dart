@@ -1,17 +1,23 @@
+import 'package:flutter/services.dart';
+import 'dart:async';
+import '../../widgets/spendy_splash_visual.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../../application/services/ai/ai_service.dart';
-import '../../../application/services/ai/local_ai_model.dart';
 import '../../../application/services/auth/auth_service.dart';
 import '../../../application/services/security/security_service.dart';
 import '../home/home_screen.dart';
 import '../setup/setup_required_screen.dart';
 import 'onboarding_screen.dart';
-import '../../../upgrader_config.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({super.key, this.ready, this.firstFrame});
+
+  /// Keeps the original splash visible until database and security are ready.
+  final Future<void>? ready;
+
+  /// Begin the animation after the launch frame is rasterized, not behind the
+  /// previous Android surface while a cold engine is still starting.
+  final Future<void>? firstFrame;
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -20,43 +26,63 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _opacityAnimation;
+  Timer? _loadingTimer;
+  bool _showLoading = false;
+  bool _animationStarted = false;
+  final _animationFinished = Completer<void>();
+  String _loadingStage = 'Opening your secure data…';
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2000),
+      duration: const Duration(milliseconds: 1300),
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _navigateToNext();
+    });
+  }
 
-    _scaleAnimation = Tween<double>(
-      begin: 0.8,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      if (!_animationStarted) _startLoadingTimer();
+      _controller.stop();
+      _controller.value = 1;
+      _animationStarted = true;
+      if (!_animationFinished.isCompleted) _animationFinished.complete();
+    } else if (!_animationStarted) {
+      _animationStarted = true;
+      unawaited(_playVisibleAnimation());
+    }
+  }
 
-    _opacityAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: const Interval(0.0, 0.5, curve: Curves.easeIn),
-      ),
-    );
+  Future<void> _playVisibleAnimation() async {
+    if (widget.firstFrame != null) await widget.firstFrame;
+    if (!mounted || _animationFinished.isCompleted) return;
+    _startLoadingTimer();
+    try {
+      await _controller.forward().orCancel;
+      if (!_animationFinished.isCompleted) _animationFinished.complete();
+    } on TickerCanceled {
+      // Navigation/disposal cancels only this visual; it never restarts startup.
+    }
+  }
 
-    _controller.forward();
-    _navigateToNext();
+  void _startLoadingTimer() {
+    _loadingTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _showLoading = true);
+    });
   }
 
   Future<void> _navigateToNext() async {
-    await Future.delayed(const Duration(milliseconds: 3000));
+    await widget.ready;
+    await _animationFinished.future;
     if (!mounted) return;
-
-    // Check if an app upgrade is required and block navigation if needed
-    await appUpgrader.initialize();
-    if (appUpgrader.shouldDisplayUpgrade()) {
-      debugPrint('>>> [SplashScreen] Upgrade is required. Blocking navigation.');
-      return;
-    }
+    setState(() => _loadingStage = 'Checking your setup…');
+    // Initialization runs during the animation; no network check delays exit.
 
     final authService = AuthService();
     final bool onboarded = await authService.isOnboarded();
@@ -68,12 +94,9 @@ class _SplashScreenState extends State<SplashScreen>
       nextScreen = const OnboardingScreen();
     } else {
       // Check Requirements before opening Home
-      final sms = await Permission.sms.isGranted;
-      final battery = await Permission.ignoreBatteryOptimizations.isGranted;
-      final ai = await AIService().modelExists(LocalAIModelType.qwenLite);
       final prefs = await SharedPreferences.getInstance();
       final legalAccepted = prefs.getBool('legal_terms_accepted') ?? false;
-      final requirementsMet = sms && battery && ai && legalAccepted;
+      final requirementsMet = legalAccepted;
 
       if (!mounted) return;
 
@@ -99,138 +122,119 @@ class _SplashScreenState extends State<SplashScreen>
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
-        transitionDuration: const Duration(milliseconds: 800),
+        transitionDuration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 250),
       ),
     );
   }
 
   @override
   void dispose() {
+    _loadingTimer?.cancel();
+    if (!_animationFinished.isCompleted) _animationFinished.complete();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Theme.of(context).colorScheme.primary,
-              Theme.of(context).colorScheme.primary.withBlue(200),
-              Theme.of(context).colorScheme.secondary,
-            ],
-          ),
-        ),
-        child: Stack(
+    final reducedMotion = MediaQuery.disableAnimationsOf(context);
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+        systemNavigationBarColor: Color(0xFF100A1E),
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        body: Stack(
+          fit: StackFit.expand,
           children: [
-            // Background subtle circles
-            Positioned(
-              top: -100,
-              right: -100,
-              child: _buildCircle(200, Colors.white.withOpacity(0.1)),
-            ),
-            Positioned(
-              bottom: -50,
-              left: -50,
-              child: _buildCircle(150, Colors.white.withOpacity(0.05)),
-            ),
-            Center(
-              child: AnimatedBuilder(
-                animation: _controller,
-                builder: (context, child) {
-                  return Opacity(
-                    opacity: _opacityAnimation.value,
-                    child: Transform.scale(
-                      scale: _scaleAnimation.value,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(32),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.2),
-                                  blurRadius: 32,
-                                  offset: const Offset(0, 16),
-                                ),
-                              ],
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(32),
-                              child: Image.asset(
-                                'assets/images/logo.png',
-                                width: 140,
-                                height: 140,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 32),
-                          const Text(
-                            'SPENDY',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 42,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 4,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Smart Finance Manager',
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.8),
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                        ],
+            DecoratedBox(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment(0, -.2),
+                  radius: 1.2,
+                  colors: [Color(0xFF281447), Color(0xFF100A1E)],
+                ),
+              ),
+              child: SafeArea(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: AnimatedBuilder(
+                          animation: _controller,
+                          builder: (_, _) =>
+                              SpendySplashVisual(progress: _controller.value),
+                        ),
                       ),
                     ),
-                  );
-                },
+                    if (_showLoading)
+                      Positioned(
+                        left: 32,
+                        right: 32,
+                        bottom: 40,
+                        child: Semantics(
+                          liveRegion: true,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: reducedMotion
+                                    ? const Icon(
+                                        Icons.hourglass_empty_rounded,
+                                        size: 16,
+                                        color: Color(0xFFC4B5FD),
+                                      )
+                                    : const CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Color(0xFFC4B5FD),
+                                      ),
+                              ),
+                              const SizedBox(width: 12),
+                              Flexible(
+                                child: Text(
+                                  _loadingStage,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Color(0xFFD9CFEA),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
-            // Bottom loading line
             Positioned(
-              bottom: 100,
-              left: 50,
-              right: 50,
-              child: FadeTransition(
-                opacity: _opacityAnimation,
-                child: Column(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(2),
-                      child: const LinearProgressIndicator(
-                        backgroundColor: Colors.white24,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                        minHeight: 2,
-                      ),
-                    ),
-                  ],
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                key: const ValueKey('splash-status-strip'),
+                height: MediaQuery.paddingOf(context).top,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF0B0714),
+                  border: Border(
+                    bottom: BorderSide(color: Color(0xFF372449), width: 1),
+                  ),
                 ),
               ),
             ),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildCircle(double size, Color color) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }

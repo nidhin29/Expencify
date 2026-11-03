@@ -1,3 +1,4 @@
+import '../refresh_status.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/goal.dart';
 
@@ -12,12 +13,16 @@ class GoalInitial extends GoalState {}
 
 class GoalLoading extends GoalState {}
 
-class GoalLoaded extends GoalState {
+class GoalLoaded extends GoalState implements RefreshStatus {
+  @override
+  final bool refreshing;
+  @override
+  final String? refreshError;
   final List<Goal> goals;
-  const GoalLoaded(this.goals);
+  const GoalLoaded(this.goals, {this.refreshing = false, this.refreshError});
 
   @override
-  List<Object?> get props => [goals];
+  List<Object?> get props => [refreshing, refreshError, goals];
 }
 
 class GoalError extends GoalState {

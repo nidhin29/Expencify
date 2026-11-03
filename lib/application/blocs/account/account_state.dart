@@ -1,3 +1,4 @@
+import '../refresh_status.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/account.dart';
 
@@ -12,13 +13,19 @@ class AccountInitial extends AccountState {}
 
 class AccountLoading extends AccountState {}
 
-class AccountLoaded extends AccountState {
+class AccountLoaded extends AccountState implements RefreshStatus {
+  @override
+  final bool refreshing;
+  @override
+  final String? refreshError;
   final List<Account> accounts;
   final int? selectedAccountId;
   final double totalBalance;
 
   const AccountLoaded({
     required this.accounts,
+    this.refreshing = false,
+    this.refreshError,
     this.selectedAccountId,
     this.totalBalance = 0.0,
   });
@@ -33,7 +40,13 @@ class AccountLoaded extends AccountState {
   }
 
   @override
-  List<Object?> get props => [accounts, selectedAccountId, totalBalance];
+  List<Object?> get props => [
+    refreshing,
+    refreshError,
+    accounts,
+    selectedAccountId,
+    totalBalance,
+  ];
 }
 
 class AccountError extends AccountState {

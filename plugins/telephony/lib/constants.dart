@@ -1,3 +1,6 @@
+// Keep the upstream public enum/constant names compatible with callers and native mappings.
+// ignore_for_file: constant_identifier_names
+
 part of 'telephony.dart';
 
 const _FOREGROUND_CHANNEL = 'plugins.shounakmulay.com/foreground_sms_channel';
@@ -39,7 +42,7 @@ const SMS_DELIVERED = "smsDelivered";
 ///
 /// Possible parameters that can be fetched during a SMS query operation.
 class _SmsProjections {
-//  static const String COUNT = "_count";
+  //  static const String COUNT = "_count";
   static const String ID = "_id";
   static const String ORIGINATING_ADDRESS = "originating_address";
   static const String ADDRESS = "address";
@@ -47,34 +50,34 @@ class _SmsProjections {
   static const String BODY = "body";
   static const String SERVICE_CENTER_ADDRESS = "service_center";
 
-//  static const String CREATOR = "creator";
+  //  static const String CREATOR = "creator";
   static const String TIMESTAMP = "timestamp";
   static const String DATE = "date";
   static const String DATE_SENT = "date_sent";
 
-//  static const String ERROR_CODE = "error_code";
-//  static const String LOCKED = "locked";
-//  static const int MESSAGE_TYPE_ALL = 0;
-//  static const int MESSAGE_TYPE_DRAFT = 3;
-//  static const int MESSAGE_TYPE_FAILED = 5;
-//  static const int MESSAGE_TYPE_INBOX = 1;
-//  static const int MESSAGE_TYPE_OUTBOX = 4;
-//  static const int MESSAGE_TYPE_QUEUED = 6;
-//  static const int MESSAGE_TYPE_SENT = 2;
-//  static const String PERSON = "person";
-//  static const String PROTOCOL = "protocol";
+  //  static const String ERROR_CODE = "error_code";
+  //  static const String LOCKED = "locked";
+  //  static const int MESSAGE_TYPE_ALL = 0;
+  //  static const int MESSAGE_TYPE_DRAFT = 3;
+  //  static const int MESSAGE_TYPE_FAILED = 5;
+  //  static const int MESSAGE_TYPE_INBOX = 1;
+  //  static const int MESSAGE_TYPE_OUTBOX = 4;
+  //  static const int MESSAGE_TYPE_QUEUED = 6;
+  //  static const int MESSAGE_TYPE_SENT = 2;
+  //  static const String PERSON = "person";
+  //  static const String PROTOCOL = "protocol";
   static const String READ = "read";
 
-//  static const String REPLY_PATH_PRESENT = "reply_path_present";
+  //  static const String REPLY_PATH_PRESENT = "reply_path_present";
   static const String SEEN = "seen";
 
-//  static const String SERVICE_CENTER = "service_center";
+  //  static const String SERVICE_CENTER = "service_center";
   static const String STATUS = "status";
 
-//  static const int STATUS_COMPLETE = 0;
-//  static const int STATUS_FAILED = 64;
-//  static const int STATUS_NONE = -1;
-//  static const int STATUS_PENDING = 32;
+  //  static const int STATUS_COMPLETE = 0;
+  //  static const int STATUS_FAILED = 64;
+  //  static const int STATUS_NONE = -1;
+  //  static const int STATUS_PENDING = 32;
   static const String SUBJECT = "subject";
   static const String SUBSCRIPTION_ID = "sub_id";
   static const String THREAD_ID = "thread_id";
@@ -89,22 +92,23 @@ class _ConversationProjections {
   static const String MSG_COUNT = "msg_count";
 }
 
-abstract class _TelephonyColumn {
-  const _TelephonyColumn();
+abstract class TelephonyColumn {
+  const TelephonyColumn();
 
   String get _name;
 }
 
 /// Represents all the possible parameters for a SMS
-class SmsColumn extends _TelephonyColumn {
+class SmsColumn extends TelephonyColumn {
   final String _columnName;
 
   const SmsColumn._(this._columnName);
 
   static const ID = SmsColumn._(_SmsProjections.ID);
   static const ADDRESS = SmsColumn._(_SmsProjections.ADDRESS);
-  static const SERVICE_CENTER_ADDRESS =
-      SmsColumn._(_SmsProjections.SERVICE_CENTER_ADDRESS);
+  static const SERVICE_CENTER_ADDRESS = SmsColumn._(
+    _SmsProjections.SERVICE_CENTER_ADDRESS,
+  );
   static const BODY = SmsColumn._(_SmsProjections.BODY);
   static const DATE = SmsColumn._(_SmsProjections.DATE);
   static const DATE_SENT = SmsColumn._(_SmsProjections.DATE_SENT);
@@ -121,16 +125,18 @@ class SmsColumn extends _TelephonyColumn {
 }
 
 /// Represents all the possible parameters for a Conversation
-class ConversationColumn extends _TelephonyColumn {
+class ConversationColumn extends TelephonyColumn {
   final String _columnName;
 
   const ConversationColumn._(this._columnName);
 
   static const SNIPPET = ConversationColumn._(_ConversationProjections.SNIPPET);
-  static const THREAD_ID =
-      ConversationColumn._(_ConversationProjections.THREAD_ID);
-  static const MSG_COUNT =
-      ConversationColumn._(_ConversationProjections.MSG_COUNT);
+  static const THREAD_ID = ConversationColumn._(
+    _ConversationProjections.THREAD_ID,
+  );
+  static const MSG_COUNT = ConversationColumn._(
+    _ConversationProjections.MSG_COUNT,
+  );
 
   @override
   String get _name => _columnName;
@@ -140,7 +146,7 @@ const DEFAULT_SMS_COLUMNS = [
   SmsColumn.ID,
   SmsColumn.ADDRESS,
   SmsColumn.BODY,
-  SmsColumn.DATE
+  SmsColumn.DATE,
 ];
 
 const INCOMING_SMS_COLUMNS = [
@@ -148,13 +154,13 @@ const INCOMING_SMS_COLUMNS = [
   SmsColumn._(_SmsProjections.MESSAGE_BODY),
   SmsColumn._(_SmsProjections.TIMESTAMP),
   SmsColumn._(_SmsProjections.SERVICE_CENTER_ADDRESS),
-  SmsColumn.STATUS
+  SmsColumn.STATUS,
 ];
 
 const DEFAULT_CONVERSATION_COLUMNS = [
   ConversationColumn.SNIPPET,
   ConversationColumn.THREAD_ID,
-  ConversationColumn.MSG_COUNT
+  ConversationColumn.MSG_COUNT,
 ];
 
 /// Represents types of SMS.
@@ -165,7 +171,7 @@ enum SmsType {
   MESSAGE_TYPE_DRAFT,
   MESSAGE_TYPE_OUTBOX,
   MESSAGE_TYPE_FAILED,
-  MESSAGE_TYPE_QUEUED
+  MESSAGE_TYPE_QUEUED,
 }
 
 /// Represents states of SMS.
@@ -221,7 +227,7 @@ enum SimState {
   CARD_IO_ERROR,
   CARD_RESTRICTED,
   LOADED,
-  PRESENT
+  PRESENT,
 }
 
 /// Represents state of cellular service.
@@ -230,7 +236,7 @@ enum ServiceState {
   OUT_OF_SERVICE,
   EMERGENCY_ONLY,
   POWER_OFF,
-  UNKNOWN
+  UNKNOWN,
 }
 
 /// Represents the quality of cellular signal.
@@ -245,7 +251,6 @@ extension Value on Sort {
       case Sort.ASC:
         return "ASC";
       case Sort.DESC:
-      default:
         return "DESC";
     }
   }

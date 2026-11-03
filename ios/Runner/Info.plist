@@ -45,5 +45,15 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Scan receipts to add expenses.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Select receipt photos to add expenses.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Enter an expense using your voice.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Convert your spoken expense into text.</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>Unlock your financial dashboard.</string>
 </dict>
 </plist>

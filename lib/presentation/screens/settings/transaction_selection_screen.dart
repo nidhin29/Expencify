@@ -1,3 +1,4 @@
+import 'package:expencify/presentation/theme/app_icons.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:expencify/domain/entities/transaction.dart';
@@ -93,7 +94,7 @@ class _TransactionSelectionScreenState
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    Icons.check_circle_outline_rounded,
+                    AppIcons.success,
                     size: 16,
                     color: theme.colorScheme.primary,
                   ),
@@ -177,7 +178,7 @@ class _TransactionSelectionScreenState
                             ),
                             child: isSelected
                                 ? const Icon(
-                                    Icons.check,
+                                    AppIcons.check,
                                     size: 16,
                                     color: Colors.white,
                                   )

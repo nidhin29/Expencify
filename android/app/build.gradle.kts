@@ -1,12 +1,16 @@
 import java.util.Properties
 import java.io.FileInputStream
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
-    id("com.google.gms.google-services")
+}
+
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -35,10 +39,6 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11.toString()
-    }
-
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.nidhi.expencify"
@@ -55,7 +55,7 @@ android {
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                null // Unsigned release; never silently use a debug certificate.
             }
             
             isMinifyEnabled = true
@@ -73,8 +73,27 @@ flutter {
     source = "../.."
 }
 
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_11) }
+}
+
 dependencies {
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.0")
+    testImplementation("junit:junit:4.13.2")
+    implementation("androidx.work:work-runtime:2.11.2")
+    implementation("com.google.guava:guava:33.3.1-android")
+    implementation("com.google.android.play:app-update:2.1.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation("com.google.android.play:asset-delivery:2.2.2")
     implementation("com.google.android.play:asset-delivery-ktx:2.2.2")
 }
+
+gradle.taskGraph.whenReady {
+    if (allTasks.any { it.name.contains("Release") && (it.name.startsWith("assemble") || it.name.startsWith("bundle") || it.name.startsWith("package")) } && !keystorePropertiesFile.exists()) {
+        throw GradleException("Release signing requires android/key.properties and a release keystore.")
+    }
+}
+
+ tasks.withType<Test>().configureEach {
+    systemProperty("spendy.backup.vector", rootProject.file("../tmp/review_native_backup_vector.txt").absolutePath)
+ }

@@ -29,9 +29,15 @@ class SqliteGoalRepository implements GoalRepository {
 
   @override
   Future<void> addContribution(int goalId, double amount) async {
-    await _db.rawUpdate(
-      'UPDATE goals SET saved_amount = saved_amount + ? WHERE id = ?',
-      [amount, goalId],
+    if (!amount.isFinite || amount > 1e12 || (amount * 100).round() <= 0) {
+      throw ArgumentError('Invalid contribution.');
+    }
+    final cents = (amount * 100).round();
+    final db = await _db.database;
+    final changed = await db.rawUpdate(
+      'UPDATE goals SET saved_amount = ROUND(COALESCE(saved_amount, 0) + ?, 2) WHERE id = ?',
+      [cents / 100, goalId],
     );
+    if (changed != 1) throw StateError('Goal no longer exists.');
   }
 }

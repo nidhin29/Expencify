@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/transaction.dart';
 
@@ -8,6 +9,11 @@ abstract class TransactionEvent extends Equatable {
   List<Object?> get props => [];
 }
 
+/// Refreshes current results without changing filters or removing the list.
+class RefreshTransactions extends TransactionEvent {
+  const RefreshTransactions();
+}
+
 class LoadTransactions extends TransactionEvent {
   final int? accountId;
   final String? type;
@@ -15,6 +21,7 @@ class LoadTransactions extends TransactionEvent {
   final DateTime? from;
   final DateTime? to;
   final String? search;
+  final bool semantic;
   final bool silent; // ← Added to bypass emitting TransactionLoading spinner
 
   const LoadTransactions({
@@ -25,6 +32,7 @@ class LoadTransactions extends TransactionEvent {
     this.to,
     this.search,
     this.silent = false,
+    this.semantic = false,
   });
 
   @override
@@ -36,13 +44,17 @@ class LoadTransactions extends TransactionEvent {
     to,
     search,
     silent,
+    semantic,
   ];
 }
 
 class AddTransaction extends TransactionEvent {
   final TransactionModel transaction;
   final List<TransactionModel>? splitChildren;
-  const AddTransaction(this.transaction, {this.splitChildren});
+
+  /// Optional acknowledgement of this mutation, independent of list refreshes.
+  final Completer<bool>? completion;
+  const AddTransaction(this.transaction, {this.splitChildren, this.completion});
 
   @override
   List<Object?> get props => [transaction, splitChildren];
@@ -51,7 +63,12 @@ class AddTransaction extends TransactionEvent {
 class UpdateTransaction extends TransactionEvent {
   final TransactionModel transaction;
   final TransactionModel oldTransaction;
-  const UpdateTransaction(this.transaction, this.oldTransaction);
+  final Completer<bool>? completion;
+  const UpdateTransaction(
+    this.transaction,
+    this.oldTransaction, {
+    this.completion,
+  });
 
   @override
   List<Object?> get props => [transaction, oldTransaction];

@@ -8,9 +8,21 @@ abstract class TransactionRepository {
     DateTime? from,
     DateTime? to,
     String? search,
-    int limit,
+    int? limit,
+    bool hideSplits,
+    bool leafOnly,
   });
-  Future<int> save(TransactionModel transaction); // insert or update
+
+  /// Saves the record and its balance effect atomically.
+  Future<int> save(TransactionModel transaction);
+
+  /// Saves an edit and renames exact old-merchant matches atomically.
+  Future<void> saveWithMerchantRename(TransactionModel transaction);
+  Future<int> saveWithChildren(
+    TransactionModel transaction,
+    List<TransactionModel> children,
+  );
+  Future<void> replaceSplits(int parentId, List<TransactionModel> children);
   Future<TransactionModel?> getById(int id);
   Future<void> delete(int id);
   Future<Map<String, double>> getCategoryTotals({

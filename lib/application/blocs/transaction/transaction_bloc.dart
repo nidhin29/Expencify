@@ -1,3 +1,5 @@
+import '../../services/search/semantic_search_service.dart';
+import '../../../domain/entities/transaction.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../domain/repositories/transaction_repository.dart';
 import '../../../domain/repositories/account_repository.dart';
@@ -5,13 +7,11 @@ import '../account/account_bloc.dart';
 import '../account/account_event.dart';
 import 'transaction_event.dart';
 import 'transaction_state.dart';
-import '../../../domain/entities/transaction.dart';
 
 import '../../services/notifications/budget_alert_service.dart';
 
 class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
   final TransactionRepository _repository;
-  final AccountRepository _accountRepo;
   final AccountBloc _accountBloc;
   final BudgetAlertService? _budgetAlerts;
 
@@ -19,16 +19,34 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
 
   TransactionBloc(
     this._repository,
-    this._accountRepo,
+    AccountRepository accountRepo,
     this._accountBloc, {
     BudgetAlertService? budgetAlerts,
   }) : _budgetAlerts = budgetAlerts,
        super(TransactionInitial()) {
-    on<LoadTransactions>(_onLoadTransactions);
-    on<AddTransaction>(_onAddTransaction);
-    on<UpdateTransaction>(_onUpdateTransaction);
-    on<DeleteTransaction>(_onDeleteTransaction);
-    on<SplitTransactions>(_onSplitTransactions);
+    on<TransactionEvent>((event, emit) async {
+      if (event is LoadTransactions) await _onLoadTransactions(event, emit);
+      if (event is RefreshTransactions) {
+        final f = _lastFilter ?? const LoadTransactions();
+        await _onLoadTransactions(
+          LoadTransactions(
+            accountId: f.accountId,
+            type: f.type,
+            category: f.category,
+            from: f.from,
+            to: f.to,
+            search: f.search,
+            semantic: f.semantic,
+            silent: true,
+          ),
+          emit,
+        );
+      }
+      if (event is AddTransaction) await _onAddTransaction(event, emit);
+      if (event is UpdateTransaction) await _onUpdateTransaction(event, emit);
+      if (event is DeleteTransaction) await _onDeleteTransaction(event, emit);
+      if (event is SplitTransactions) await _onSplitTransactions(event, emit);
+    }, transformer: (events, mapper) => events.asyncExpand(mapper));
   }
 
   Future<void> _onSplitTransactions(
@@ -36,13 +54,8 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
     Emitter<TransactionState> emit,
   ) async {
     try {
-      // Keep original transaction as-is. Split state is shown via child rows with parentId.
-      final original = event.original;
-
-      // 2. Save parts linked to original
-      for (final part in event.parts) {
-        await _repository.save(part.copyWith(parentId: original.id));
-      }
+      await _repository.replaceSplits(event.original.id!, event.parts);
+      SemanticSearchService().schedule();
 
       if (_lastFilter != null) {
         add(_lastFilter!);
@@ -58,22 +71,55 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
     LoadTransactions event,
     Emitter<TransactionState> emit,
   ) async {
+    final previousFilter = _lastFilter;
     _lastFilter = event;
-    if (!event.silent) {
+    final sameFilter =
+        previousFilter != null &&
+        previousFilter.accountId == event.accountId &&
+        previousFilter.type == event.type &&
+        previousFilter.category == event.category &&
+        previousFilter.from == event.from &&
+        previousFilter.to == event.to &&
+        previousFilter.search == event.search &&
+        previousFilter.semantic == event.semantic;
+    final previous = sameFilter && state is TransactionLoaded
+        ? state as TransactionLoaded
+        : null;
+    if (!event.silent && previous != null) {
+      emit(TransactionLoaded(previous.transactions, refreshing: true));
+    }
+    if (previous == null) {
       emit(TransactionLoading());
     }
     try {
-      final transactions = await _repository.getTransactions(
+      var transactions = await _repository.getTransactions(
         accountId: event.accountId,
         type: event.type,
         category: event.category,
         from: event.from,
         to: event.to,
-        search: event.search,
+        search: event.semantic ? null : event.search,
       );
+      if (event.semantic && (event.search?.trim().isNotEmpty ?? false)) {
+        final rows = await SemanticSearchService().search(
+          transactions.map((t) => t.toMap()).toList(),
+          event.search!,
+        );
+        transactions = rows.map(TransactionModel.fromMap).toList();
+      }
       emit(TransactionLoaded(transactions));
     } catch (e) {
-      emit(TransactionError(e.toString()));
+      emit(
+        previous == null
+            ? const TransactionError(
+                'Could not load transactions. Please retry.',
+              )
+            : TransactionLoaded(
+                previous.transactions,
+                refreshError:
+                    'Could not refresh. Your previous data is still shown.',
+              ),
+      );
     }
   }
 
@@ -82,19 +128,12 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
     Emitter<TransactionState> emit,
   ) async {
     try {
-      final parentId = await _repository.save(event.transaction);
-
-      if (event.splitChildren != null && event.splitChildren!.isNotEmpty) {
-        for (final child in event.splitChildren!) {
-          await _repository.save(child.copyWith(parentId: parentId));
-        }
-      }
-
-      // Apply balance effect
-      final delta = event.transaction.type == 'income'
-          ? event.transaction.amount
-          : -event.transaction.amount;
-      await _accountRepo.updateBalance(event.transaction.accountId, delta);
+      await _repository.saveWithChildren(
+        event.transaction,
+        event.splitChildren ?? [],
+      );
+      event.completion?.complete(true);
+      SemanticSearchService().schedule();
       _accountBloc.add(LoadAccounts()); // ← refresh Net Balance card
 
       if (_lastFilter != null) {
@@ -106,6 +145,7 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
             from: _lastFilter!.from,
             to: _lastFilter!.to,
             search: _lastFilter!.search,
+            semantic: _lastFilter!.semantic,
             silent: true,
           ),
         );
@@ -114,8 +154,15 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       }
 
       // Check for budget alerts
-      _budgetAlerts?.checkBudgets();
+      try {
+        await _budgetAlerts?.checkBudgets();
+      } catch (_) {
+        /* Financial commit succeeded; alerts are best effort. */
+      }
     } catch (e) {
+      if (event.completion?.isCompleted == false) {
+        event.completion!.complete(false);
+      }
       emit(TransactionError(e.toString()));
     }
   }
@@ -125,85 +172,9 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
     Emitter<TransactionState> emit,
   ) async {
     try {
-      final old = event.oldTransaction;
-      final newT = event.transaction;
-
-      // 1. If this is a split child, we must update the parent's amount by the difference
-      if (old.parentId != null && newT.parentId != null) {
-        final parent = await _repository.getById(old.parentId!);
-        if (parent != null) {
-          final diff = newT.amount - old.amount;
-          final newParentAmount = parent.amount + diff;
-          await _repository.save(parent.copyWith(amount: newParentAmount));
-        }
-      }
-
-      // 1.5 If this is a split PARENT, and its amount changed, we must adjust a child to balance it!
-      if (old.parentId == null &&
-          newT.parentId == null &&
-          old.amount != newT.amount &&
-          old.id != null) {
-        final children = await _repository.getChildTransactions(old.id!);
-        if (children.isNotEmpty) {
-          double childSum = children.fold(0, (sum, c) => sum + c.amount);
-          double diff = newT.amount - childSum;
-
-          if (diff != 0) {
-            TransactionModel? targetChild;
-            for (var c in children) {
-              if (c.category == 'Other' || c.merchant.contains('(Other)')) {
-                targetChild = c;
-                break;
-              }
-            }
-
-            if (targetChild != null) {
-              double newAmt = targetChild.amount + diff;
-              if (newAmt <= 0) {
-                await _repository.delete(targetChild.id!);
-              } else {
-                await _repository.save(targetChild.copyWith(amount: newAmt));
-              }
-            } else if (diff > 0) {
-              await _repository.save(
-                TransactionModel(
-                  accountId: newT.accountId,
-                  amount: diff,
-                  category: 'Other',
-                  merchant: newT.merchant.isNotEmpty
-                      ? '${newT.merchant} (Other)'
-                      : 'Other Items',
-                  date: newT.date,
-                  type: newT.type,
-                  parentId: newT.id,
-                ),
-              );
-            } else {
-              // diff is negative, no 'Other' child to dock from. Dock from the largest child.
-              targetChild = children.reduce(
-                (a, b) => a.amount > b.amount ? a : b,
-              );
-              double newAmt = targetChild.amount + diff;
-              if (newAmt <= 0) {
-                await _repository.delete(targetChild.id!);
-              } else {
-                await _repository.save(targetChild.copyWith(amount: newAmt));
-              }
-            }
-          }
-        }
-      }
-
-      // 2. Reverse old effect
-      final oldDelta = old.type == 'income' ? -old.amount : old.amount;
-      await _accountRepo.updateBalance(old.accountId, oldDelta);
-
-      // 3. Update record
-      await _repository.save(newT);
-
-      // 4. Apply new effect
-      final newDelta = newT.type == 'income' ? newT.amount : -newT.amount;
-      await _accountRepo.updateBalance(newT.accountId, newDelta);
+      await _repository.saveWithMerchantRename(event.transaction);
+      event.completion?.complete(true);
+      SemanticSearchService().schedule();
       _accountBloc.add(LoadAccounts()); // ← refresh Net Balance card
 
       if (_lastFilter != null) {
@@ -215,6 +186,7 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
             from: _lastFilter!.from,
             to: _lastFilter!.to,
             search: _lastFilter!.search,
+            semantic: _lastFilter!.semantic,
             silent: true,
           ),
         );
@@ -223,8 +195,15 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       }
 
       // Check for budget alerts
-      _budgetAlerts?.checkBudgets();
+      try {
+        await _budgetAlerts?.checkBudgets();
+      } catch (_) {
+        /* Financial commit succeeded; alerts are best effort. */
+      }
     } catch (e) {
+      if (event.completion?.isCompleted == false) {
+        event.completion!.complete(false);
+      }
       emit(TransactionError(e.toString()));
     }
   }
@@ -234,11 +213,7 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
     Emitter<TransactionState> emit,
   ) async {
     try {
-      // Reverse effect
-      final t = event.transaction;
-      final delta = t.type == 'income' ? -t.amount : t.amount;
-      await _accountRepo.updateBalance(t.accountId, delta);
-      await _repository.delete(t.id!);
+      await _repository.delete(event.transaction.id!);
       _accountBloc.add(LoadAccounts()); // ← refresh Net Balance card
 
       if (_lastFilter != null) {
@@ -250,6 +225,7 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
             from: _lastFilter!.from,
             to: _lastFilter!.to,
             search: _lastFilter!.search,
+            semantic: _lastFilter!.semantic,
             silent: true,
           ),
         );
@@ -258,7 +234,11 @@ class TransactionBloc extends Bloc<TransactionEvent, TransactionState> {
       }
 
       // Check for budget alerts
-      _budgetAlerts?.checkBudgets();
+      try {
+        await _budgetAlerts?.checkBudgets();
+      } catch (_) {
+        /* Financial commit succeeded; alerts are best effort. */
+      }
     } catch (e) {
       emit(TransactionError(e.toString()));
     }

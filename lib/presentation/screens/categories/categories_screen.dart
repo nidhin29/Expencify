@@ -1,264 +1,73 @@
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:expencify/domain/entities/category.dart';
-import 'package:expencify/application/blocs/category/category_bloc.dart';
-import 'package:expencify/application/blocs/category/category_event.dart';
-import 'package:expencify/application/blocs/category/category_state.dart';
+import '../../../domain/entities/category.dart';
+import '../../../application/blocs/category/category_bloc.dart';
+import '../../../application/blocs/category/category_event.dart';
+import '../../../application/blocs/category/category_state.dart';
+import '../../widgets/category_appearance.dart';
+import '../../widgets/category_editor.dart';
+import '../../widgets/tool_cards.dart';
 
 class CategoriesScreen extends StatefulWidget {
   const CategoriesScreen({super.key});
-
   @override
   State<CategoriesScreen> createState() => _CategoriesScreenState();
 }
 
-class _CategoriesScreenState extends State<CategoriesScreen> {
-  final List<Map<String, dynamic>> _iconOptions = [
-    {'name': 'restaurant', 'icon': Icons.restaurant_rounded, 'label': 'Food'},
-    {
-      'name': 'directions_car',
-      'icon': Icons.directions_car_rounded,
-      'label': 'Transport',
-    },
-    {
-      'name': 'shopping_cart',
-      'icon': Icons.shopping_cart_rounded,
-      'label': 'Shopping',
-    },
-    {'name': 'movie', 'icon': Icons.movie_rounded, 'label': 'Movies'},
-    {
-      'name': 'local_hospital',
-      'icon': Icons.local_hospital_rounded,
-      'label': 'Medical',
-    },
-    {'name': 'school', 'icon': Icons.school_rounded, 'label': 'Education'},
-    {'name': 'home', 'icon': Icons.home_rounded, 'label': 'Home'},
-    {'name': 'bolt', 'icon': Icons.bolt_rounded, 'label': 'Utilities'},
-    {'name': 'flight', 'icon': Icons.flight_rounded, 'label': 'Travel'},
-    {'name': 'credit_card', 'icon': Icons.credit_card_rounded, 'label': 'EMI'},
-    {
-      'name': 'fitness_center',
-      'icon': Icons.fitness_center_rounded,
-      'label': 'Gym',
-    },
-    {'name': 'pets', 'icon': Icons.pets_rounded, 'label': 'Pets'},
-    {'name': 'money', 'icon': Icons.attach_money_rounded, 'label': 'Money'},
-    {'name': 'business', 'icon': Icons.business_rounded, 'label': 'Business'},
-    {
-      'name': 'trending_up',
-      'icon': Icons.trending_up_rounded,
-      'label': 'Investment',
-    },
-    {'name': 'category', 'icon': Icons.category_rounded, 'label': 'Other'},
-  ];
-
-  final List<Color> _colorOptions = [
-    const Color(0xFFF44336),
-    const Color(0xFFE91E63),
-    const Color(0xFF9C27B0),
-    const Color(0xFF673AB7),
-    const Color(0xFF3F51B5),
-    const Color(0xFF2196F3),
-    const Color(0xFF03A9F4),
-    const Color(0xFF00BCD4),
-    const Color(0xFF009688),
-    const Color(0xFF4CAF50),
-    const Color(0xFF8BC34A),
-    const Color(0xFFCDDC39),
-    const Color(0xFFFFEB3B),
-    const Color(0xFFFFC107),
-    const Color(0xFFFF9800),
-    const Color(0xFFFF5722),
-    const Color(0xFF795548),
-    const Color(0xFF607D8B),
-  ];
-
-  IconData _iconData(String name) {
-    final found = _iconOptions.firstWhere(
-      (o) => o['name'] == name,
-      orElse: () => _iconOptions.last,
-    );
-    return found['icon'] as IconData;
-  }
-
+class _CategoriesScreenState extends State<CategoriesScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(length: 2, vsync: this);
     _load();
   }
 
-  Future<void> _load() async {
-    context.read<CategoryBloc>().add(const LoadCategories());
+  void _load() => context.read<CategoryBloc>().add(const LoadCategories());
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
   }
 
-  void _addCategoryDialog({Category? existing}) {
-    final formKey = GlobalKey<FormState>();
-    final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    String selectedIcon = existing?.icon ?? 'category';
-    int selectedColor = existing?.color ?? 0xFF6366F1;
-    String selectedType = existing?.type ?? 'expense';
-
-    showDialog(
+  Future<void> _edit({Category? category}) async {
+    final bloc = context.read<CategoryBloc>();
+    final state = bloc.state;
+    if (state is! CategoryLoaded) return;
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          title: Text(existing != null ? 'Edit Category' : 'New Category'),
-          content: Form(
-            key: formKey,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextFormField(
-                    controller: nameCtrl,
-                    decoration: const InputDecoration(labelText: 'Name'),
-                    validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: ['expense', 'income']
-                        .map(
-                          (t) => GestureDetector(
-                            onTap: () => setS(() => selectedType = t),
-                            child: Container(
-                              margin: const EdgeInsets.only(right: 8),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: selectedType == t
-                                    ? (t == 'expense'
-                                              ? Colors.red
-                                              : Colors.green)
-                                          .withOpacity(0.15)
-                                    : Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: selectedType == t
-                                      ? (t == 'expense'
-                                            ? Colors.red
-                                            : Colors.green)
-                                      : Colors.transparent,
-                                ),
-                              ),
-                              child: Text(
-                                t == 'expense' ? 'Expense' : 'Income',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: selectedType == t
-                                      ? (t == 'expense'
-                                            ? Colors.red
-                                            : Colors.green)
-                                      : Colors.grey,
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Icon',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: _iconOptions
-                        .map(
-                          (opt) => GestureDetector(
-                            onTap: () => setS(() => selectedIcon = opt['name']),
-                            child: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: selectedIcon == opt['name']
-                                    ? Color(selectedColor).withOpacity(0.2)
-                                    : Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: selectedIcon == opt['name']
-                                      ? Color(selectedColor)
-                                      : Colors.transparent,
-                                ),
-                              ),
-                              child: Icon(
-                                opt['icon'] as IconData,
-                                size: 22,
-                                color: selectedIcon == opt['name']
-                                    ? Color(selectedColor)
-                                    : Colors.grey.shade600,
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Color',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: _colorOptions
-                        .map(
-                          (c) => GestureDetector(
-                            onTap: () => setS(() => selectedColor = c.value),
-                            child: Container(
-                              width: 32,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                color: c,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: selectedColor == c.value
-                                      ? Colors.black
-                                      : Colors.transparent,
-                                  width: 2,
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (!formKey.currentState!.validate()) return;
-                final cat = Category(
-                  id: existing?.id,
-                  name: nameCtrl.text.trim(),
-                  icon: selectedIcon,
-                  color: selectedColor,
-                  type: selectedType,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: false,
+      isDismissible: false,
+      enableDrag: false,
+      builder: (_) => CategoryEditor(
+        existing: category,
+        initialType: _tabs.index == 0 ? 'expense' : 'income',
+        categories: state.categories,
+        onSave: (value) async {
+          final result = bloc.stream.firstWhere(
+            (state) => state is CategorySaved || state is CategoryError,
+          );
+          bloc.add(SaveCategory(value));
+          final saved = await result;
+          if (saved is CategoryError) throw StateError('Category save failed');
+          if (mounted) _tabs.animateTo(value.type == 'income' ? 1 : 0);
+        },
+        onDelete: category?.id == null
+            ? null
+            : () async {
+                final result = bloc.stream.firstWhere(
+                  (state) => state is CategoryDeleted || state is CategoryError,
                 );
-                if (existing != null) {
-                  context.read<CategoryBloc>().add(SaveCategory(cat));
-                } else {
-                  context.read<CategoryBloc>().add(SaveCategory(cat));
+                bloc.add(DeleteCategory(category!.id!));
+                if (await result is CategoryError) {
+                  throw StateError('Category delete failed');
                 }
-                if (ctx.mounted) Navigator.pop(ctx);
               },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -266,170 +75,152 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        backgroundColor: const Color(0xFFF8FAFC), // Modern off-white background
+    final cs = theme.colorScheme;
+    return BlocConsumer<CategoryBloc, CategoryState>(
+      listener: (context, state) {
+        if (state is CategorySaved || state is CategoryDeleted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                state is CategorySaved ? 'Category saved' : 'Category deleted',
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      },
+      builder: (context, state) => Scaffold(
         appBar: AppBar(
-          systemOverlayStyle: SystemUiOverlayStyle(
-            statusBarColor: Colors.transparent,
-            statusBarIconBrightness: theme.brightness == Brightness.dark
-                ? Brightness.light
-                : Brightness.dark,
-            statusBarBrightness: theme.brightness, // For iOS
-          ),
-          title: const Text(
-            'Categories',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          backgroundColor: Colors.transparent,
-          elevation: 0,
+          title: const Text('Categories'),
           actions: [
             IconButton(
-              icon: const Icon(Icons.add_rounded),
-              onPressed: () => _addCategoryDialog(),
+              tooltip: 'Add category',
+              onPressed: state is CategoryLoaded ? () => _edit() : null,
+              icon: const Icon(AppIcons.add),
             ),
           ],
           bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(50),
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(25),
-              ),
-              child: TabBar(
-                dividerColor: Colors.transparent,
-                indicatorSize: TabBarIndicatorSize.tab,
-                labelColor: Colors.white,
-                unselectedLabelColor: Colors.grey.shade600,
-                labelStyle: const TextStyle(fontWeight: FontWeight.bold),
-                indicator: BoxDecoration(
-                  borderRadius: BorderRadius.circular(25),
-                  color: theme.colorScheme.primary,
+            preferredSize: const Size.fromHeight(64),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest.withValues(alpha: .55),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                tabs: const [
-                  Tab(text: 'Expense'),
-                  Tab(text: 'Income'),
-                ],
+                child: TabBar(
+                  controller: _tabs,
+                  dividerColor: Colors.transparent,
+                  padding: const EdgeInsets.all(4),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  indicator: BoxDecoration(
+                    color: cs.primary,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  labelColor: cs.onPrimary,
+                  unselectedLabelColor: cs.onSurfaceVariant,
+                  tabs: const [
+                    Tab(text: 'Expense'),
+                    Tab(text: 'Income'),
+                  ],
+                ),
               ),
             ),
           ),
         ),
-        body: BlocBuilder<CategoryBloc, CategoryState>(
-          builder: (context, state) {
-            if (state is CategoryLoading) {
-              return const Center(child: CircularProgressIndicator());
-            } else if (state is CategoryLoaded) {
-              final categories = state.categories;
-              return TabBarView(
-                children: [
-                  _buildGrid(
-                    categories.where((c) => c.type == 'expense').toList(),
-                    theme,
-                    'expense',
+        body: LoadingFeedback(
+          loading: state is CategoryLoaded && state.refreshing,
+          error: state is CategoryLoaded ? state.refreshError : null,
+          onRetry: _load,
+          child: state is CategoryLoaded
+              ? TabBarView(
+                  controller: _tabs,
+                  children: [
+                    _list(
+                      state.categories
+                          .where((c) => c.type == 'expense')
+                          .toList(),
+                      'expense',
+                    ),
+                    _list(
+                      state.categories
+                          .where((c) => c.type == 'income')
+                          .toList(),
+                      'income',
+                    ),
+                  ],
+                )
+              : state is CategoryError
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          AppIcons.error,
+                          size: 44,
+                          color: cs.onSurfaceVariant,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Could not load categories',
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 20),
+                        FilledButton(
+                          onPressed: _load,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
                   ),
-                  _buildGrid(
-                    categories.where((c) => c.type == 'income').toList(),
-                    theme,
-                    'income',
-                  ),
-                ],
-              );
-            } else if (state is CategoryError) {
-              return Center(child: Text(state.message));
-            }
-            return const SizedBox.shrink();
-          },
+                )
+              : const PageLoading(label: 'Loading categories'),
         ),
       ),
     );
   }
 
-  Widget _buildGrid(List<Category> cats, ThemeData theme, String type) {
-    if (cats.isEmpty) {
-      return Center(
-        child: Text(
-          'No categories for $type yet.',
-          style: const TextStyle(color: Colors.grey, fontSize: 16),
-        ),
+  Widget _list(List<Category> categories, String type) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    if (categories.isEmpty) {
+      return ToolEmptyState(
+        icon: AppIcons.categories,
+        title: 'No $type categories yet',
+        action: 'Add category',
+        onAction: () => _edit(),
       );
     }
-    return GridView.builder(
-      padding: const EdgeInsets.all(20),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 16,
-        crossAxisSpacing: 16,
-        childAspectRatio: 0.9,
-      ),
-      itemCount: cats.length,
-      itemBuilder: (ctx, idx) {
-        final c = cats[idx];
-        return GestureDetector(
-          onTap: () => _addCategoryDialog(existing: c),
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Stack(
+    categories.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns =
+            constraints.maxWidth >= 640 &&
+                MediaQuery.textScalerOf(context).scale(1) <= 1.4
+            ? 2
+            : 1;
+        final rows = (categories.length / columns).ceil();
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+          itemCount: rows,
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
+          itemBuilder: (_, row) => IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Color(c.color).withOpacity(0.1),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          _iconData(c.icon),
-                          color: Color(c.color),
-                          size: 26,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        c.name,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+                for (var col = 0; col < columns; col++) ...[
+                  if (col > 0) const SizedBox(width: 12),
+                  Expanded(
+                    child: row * columns + col >= categories.length
+                        ? const SizedBox.shrink()
+                        : _tile(categories[row * columns + col], theme, cs),
                   ),
-                ),
-                Positioned(
-                  top: 4,
-                  right: 4,
-                  child: GestureDetector(
-                    onTap: () => _showDeleteConfirm(c),
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(0.08),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.close_rounded,
-                        size: 14,
-                        color: Colors.red,
-                      ),
-                    ),
-                  ),
-                ),
+                ],
               ],
             ),
           ),
@@ -438,30 +229,47 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
     );
   }
 
-  void _showDeleteConfirm(Category c) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Category?'),
-        content: Text('Are you sure you want to delete "${c.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              context.read<CategoryBloc>().add(DeleteCategory(c.id!));
-              Navigator.pop(ctx);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
+  Widget _tile(Category category, ThemeData theme, ColorScheme cs) => Semantics(
+    button: true,
+    label: 'Edit ${category.name}',
+    onTap: () => _edit(category: category),
+    excludeSemantics: true,
+    child: Material(
+      color: cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: .6)),
       ),
-    );
-  }
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _edit(category: category),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Color(category.color).withValues(alpha: .12),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(
+                  CategoryAppearance.icon(category.icon),
+                  color: CategoryAppearance.ink(category.color, theme),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(category.name, style: theme.textTheme.titleSmall),
+              ),
+              const SizedBox(width: 8),
+              Icon(AppIcons.chevron, size: 20, color: cs.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }

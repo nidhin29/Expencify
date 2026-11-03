@@ -1,3 +1,4 @@
+import '../refresh_status.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/entities/appliance.dart';
 
@@ -12,12 +13,20 @@ class ApplianceInitial extends ApplianceState {}
 
 class ApplianceLoading extends ApplianceState {}
 
-class ApplianceLoaded extends ApplianceState {
+class ApplianceLoaded extends ApplianceState implements RefreshStatus {
+  @override
+  final bool refreshing;
+  @override
+  final String? refreshError;
   final List<Appliance> appliances;
-  const ApplianceLoaded(this.appliances);
+  const ApplianceLoaded(
+    this.appliances, {
+    this.refreshing = false,
+    this.refreshError,
+  });
 
   @override
-  List<Object?> get props => [appliances];
+  List<Object?> get props => [refreshing, refreshError, appliances];
 }
 
 class ApplianceError extends ApplianceState {

@@ -1,13 +1,28 @@
+import '../../widgets/voice_entry_dialog.dart';
+import '../../widgets/app_date_picker.dart';
+import '../../widgets/home_spending_chart.dart';
+import '../../widgets/page_loading.dart';
+import 'package:expencify/presentation/theme/app_icons.dart';
+import '../../../application/services/payments/upcoming_payments.dart';
+import '../../../application/services/notifications/budget_update_service.dart';
+import '../../../application/blocs/subscription/subscription_bloc.dart';
+import '../../../application/blocs/subscription/subscription_state.dart';
+import '../payments/upcoming_payments_screen.dart';
+import '../../../application/services/search/semantic_search_service.dart';
+import '../../widgets/ai_feature_gate.dart';
+import '../../widgets/account_editor.dart';
+import '../setup/sms_tracking_screen.dart';
+import '../../../application/services/sms/sms_tracking_preference.dart';
+import '../../widgets/home_back_handler.dart';
+import '../../widgets/spendy_bottom_bar.dart';
+import '../../widgets/finance_summary_card.dart';
+import 'package:expencify/application/services/notifications/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:expencify/presentation/screens/setup/setup_required_screen.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
-import 'dart:ui';
-import 'package:showcaseview/showcaseview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:expencify/presentation/theme/app_theme.dart';
@@ -18,11 +33,9 @@ import 'package:expencify/presentation/screens/budgets/budgets_screen.dart';
 import 'package:expencify/presentation/screens/reports/reports_screen.dart';
 import 'package:expencify/presentation/screens/settings/settings_screen.dart';
 import 'package:expencify/presentation/screens/goals/goals_screen.dart';
-import 'package:expencify/presentation/screens/reminders/reminders_screen.dart';
 import 'package:expencify/presentation/screens/categories/categories_screen.dart';
 import 'package:expencify/presentation/screens/appliances/appliances_screen.dart';
 import 'package:expencify/presentation/screens/chat/chat_screen.dart';
-import 'package:expencify/presentation/screens/subscriptions/subscriptions_screen.dart';
 import 'package:expencify/application/blocs/reminder/reminder_bloc.dart';
 import 'package:expencify/application/blocs/reminder/reminder_state.dart';
 import 'package:expencify/application/blocs/reminder/reminder_event.dart';
@@ -35,41 +48,27 @@ import 'package:expencify/application/blocs/account/account_event.dart';
 import 'package:expencify/application/blocs/account/account_state.dart';
 import 'package:expencify/application/services/voice/voice_service.dart';
 import 'package:expencify/application/services/ai/ai_service.dart';
-import 'package:expencify/application/services/ocr/ocr_service.dart';
 import 'package:expencify/application/blocs/transaction/transaction_bloc.dart';
 import 'package:expencify/application/blocs/transaction/transaction_event.dart';
 import 'package:expencify/application/blocs/transaction/transaction_state.dart';
 import 'package:expencify/application/services/sms/sms_monitor_service.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:collection/collection.dart';
 
 /// Global route observer instance — register in MaterialApp.navigatorObservers.
-final RouteObserver<ModalRoute<void>> homeRouteObserver =
-    RouteObserver<ModalRoute<void>>();
+// Only full pages can change dashboard data on return. Popup routes such as
+// filters, menus and dialogs must not trigger a second dashboard reload.
+final RouteObserver<PageRoute<dynamic>> homeRouteObserver =
+    RouteObserver<PageRoute<dynamic>>();
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return ShowCaseWidget(
-      builder: (context) => const _HomeScreenContent(),
-    );
-  }
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenContent extends StatefulWidget {
-  const _HomeScreenContent();
-
-  @override
-  State<_HomeScreenContent> createState() => _HomeScreenContentState();
-}
-
-class _HomeScreenContentState extends State<_HomeScreenContent>
-    with TickerProviderStateMixin, RouteAware {
-  late AnimationController _pulseController;
-  late AnimationController _orbitController;
+class _HomeScreenState extends State<HomeScreen> with RouteAware {
   int _currentIndex = 0;
+  final _visitedTabs = <int>{0};
   final _rupeeFmt = NumberFormat.currency(
     locale: 'en_IN',
     symbol: '₹',
@@ -80,25 +79,24 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
   double _monthIncome = 0;
   double _monthExpense = 0;
   List<TransactionModel> _recent = [];
-  Map<String, double> _weeklyExpenses = {};
   DateTime? _filterDateFrom;
   DateTime? _filterDateTo;
   String _dateLabel = 'This month';
   String _chartPeriod = '7 Days';
-  bool _loading = true;
-  bool _isListening = false;
-  bool _isAiThinking = false;
+  bool _loading = true, _refreshing = false, _hasDashboardData = false;
+  String? _loadError;
+  Object? _dataScope;
+  int _dataRequest = 0;
+  int _chartRefreshToken = 0;
+  int? _dashboardAccountId;
+  bool _cashFlowLoading = false;
+  String? _cashFlowError;
+  bool _voiceEntryOpen = false;
   bool? _requirementsMet = true; // Default true, splash pre-verified it
   final _voiceService = VoiceService();
   final _aiService = AIService();
-  final _ocrService = OCRService();
   StreamSubscription? _smsSubscription;
-
-  // Showcase Keys
-  final GlobalKey _aiChatKey = GlobalKey();
-  final GlobalKey _moreMenuKey = GlobalKey();
-  final GlobalKey _accountsTabKey = GlobalKey();
-  final GlobalKey _voiceFabKey = GlobalKey();
+  List<UpcomingPayment> _lastUpcoming = [];
 
   @override
   void initState() {
@@ -106,31 +104,26 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     // Use WidgetsBinding to call _loadData after Provider is accessible
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadData();
-      _checkAndStartTutorial();
     });
 
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-
-    _orbitController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 4),
-    )..repeat();
-
-    // Initialize AI Service
-    _aiService.init();
+    // Optional search indexing resumes only after reaching Home.
+    unawaited(SemanticSearchService().activate());
 
     // Trigger Reminder load for heads-up UI
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<ReminderBloc>().add(LoadReminders());
+      if (mounted) {
+        context.read<ReminderBloc>().add(LoadReminders());
+        final notifications = NotificationService();
+        if (notifications.pendingPayload != null) {
+          notifications.onTap?.call(notifications.pendingPayload!);
+        }
+      }
     });
 
     // Listen to background SMS isolate alerts to reload UI in real-time
     _smsSubscription = SmsMonitorService.onSmsProcessed.stream.listen((_) {
       if (mounted) {
-        context.read<TransactionBloc>().add(LoadTransactions());
+        context.read<TransactionBloc>().add(const RefreshTransactions());
         context.read<AccountBloc>().add(LoadAccounts());
         _loadData(silent: true);
       }
@@ -141,7 +134,8 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Subscribe to route events so _loadData fires whenever HomeScreen resumes.
-    homeRouteObserver.subscribe(this, ModalRoute.of(context)!);
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic>) homeRouteObserver.subscribe(this, route);
   }
 
   @override
@@ -149,9 +143,6 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     // Called whenever a route above HomeScreen is popped (e.g. TransactionEntry).
     if (mounted) {
       _loadData(silent: true);
-      if (_currentIndex == 0) {
-        _checkAndStartTutorial();
-      }
     }
   }
 
@@ -159,32 +150,14 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
   void dispose() {
     _smsSubscription?.cancel();
     homeRouteObserver.unsubscribe(this);
-    _pulseController.dispose();
-    _orbitController.dispose();
-    _voiceService.stopListening();
+    unawaited(_voiceService.cancelListening());
     super.dispose();
   }
 
-  Future<void> _checkAndStartTutorial() async {
-    final prefs = await SharedPreferences.getInstance();
-    final bool tutorialShown = prefs.getBool('home_tutorial_shown') ?? false;
-    
-    if (!tutorialShown && mounted) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) {
-          ShowCaseWidget.of(context).startShowCase([
-            _aiChatKey,
-            _moreMenuKey,
-            _accountsTabKey,
-            _voiceFabKey,
-          ]);
-          prefs.setBool('home_tutorial_shown', true);
-        }
-      });
-    }
-  }
-
-  Future<void> _loadData({bool silent = false}) async {
+  Future<void> _loadData({
+    bool silent = false,
+    bool cashFlowOnly = false,
+  }) async {
     if (!mounted) return;
 
     final transactionRepo = context.read<TransactionRepository>();
@@ -194,105 +167,95 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
       selectedId = accountState.selectedAccountId;
     }
 
-    if (!silent) {
-      setState(() => _loading = true);
-    }
-    // Compute balance as sum of all-time income minus expenses for the selected
-    // account (or all accounts). This is always accurate regardless of whether
-    // the `balance` column on the accounts table is in sync.
-    final allTimeIncome = await transactionRepo.getRangeTotal(
-      'income',
-      accountId: selectedId,
-    );
-    final allTimeExpense = await transactionRepo.getRangeTotal(
-      'expense',
-      accountId: selectedId,
-    );
-    final balance = allTimeIncome - allTimeExpense;
+    final request = ++_dataRequest;
+    final scope = (selectedId, _filterDateFrom, _filterDateTo, _dateLabel);
+    final localRefresh =
+        cashFlowOnly && _hasDashboardData && _dashboardAccountId == selectedId;
+    final retain = localRefresh || _dataScope == scope;
+    final filterFrom = _filterDateFrom;
+    final filterTo = _filterDateTo;
+    final dateLabel = _dateLabel;
+    setState(() {
+      _hasDashboardData = retain;
+      _loading = !retain;
+      _refreshing = retain && !silent && !localRefresh;
+      _cashFlowLoading = localRefresh;
+      _cashFlowError = null;
+      _loadError = null;
+    });
+    try {
+      // Compute balance as sum of all-time income minus expenses for the selected
+      // account (or all accounts). This is always accurate regardless of whether
+      // the `balance` column on the accounts table is in sync.
+      var balance = _balance;
+      if (!localRefresh) {
+        final allTimeIncome = await transactionRepo.getRangeTotal(
+          'income',
+          accountId: selectedId,
+        );
+        final allTimeExpense = await transactionRepo.getRangeTotal(
+          'expense',
+          accountId: selectedId,
+        );
+        balance = allTimeIncome - allTimeExpense;
+      }
 
-    // Default to this month if no filter set
-    DateTime? from = _filterDateFrom;
-    DateTime? to = _filterDateTo;
-    if (from == null && _dateLabel.toLowerCase() == 'this month') {
-      final now = DateTime.now();
-      from = DateTime(now.year, now.month, 1);
-      to = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-    }
+      // Default to this month if no filter set
+      DateTime? from = filterFrom;
+      DateTime? to = filterTo;
+      if (from == null && dateLabel.toLowerCase() == 'this month') {
+        final now = DateTime.now();
+        from = DateTime(now.year, now.month, 1);
+        to = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+      }
 
-    final income = await transactionRepo.getRangeTotal(
-      'income',
-      from: from,
-      to: to,
-      accountId: selectedId,
-    );
-    final expense = await transactionRepo.getRangeTotal(
-      'expense',
-      from: from,
-      to: to,
-      accountId: selectedId,
-    );
-    final recent = await transactionRepo.getTransactions(
-      from: from,
-      to: to,
-      limit: 8,
-      accountId: selectedId,
-    );
-
-    // DEBUG LOG FOR DUPLICATES
-    for (final t in recent) {
-      debugPrint(
-        '>>> [DEBUG_RECENT] ID: ${t.id} | Merchant: ${t.merchant} | Amount: ${t.amount} | Date: ${t.date.toIso8601String()}',
-      );
-    }
-
-    // Dynamic Chart Data
-    final nowChart = DateTime.now();
-    DateTime fromChart;
-    Map<String, double> chartData = {};
-
-    if (_chartPeriod == '7 Days') {
-      fromChart = DateTime(
-        nowChart.year,
-        nowChart.month,
-        nowChart.day,
-      ).subtract(const Duration(days: 6));
-      chartData = await transactionRepo.getDailyTotals(
-        type: 'expense',
-        from: fromChart,
-        to: nowChart,
+      final income = await transactionRepo.getRangeTotal(
+        'income',
+        from: from,
+        to: to,
         accountId: selectedId,
       );
-    } else if (_chartPeriod == '30 Days') {
-      fromChart = DateTime(
-        nowChart.year,
-        nowChart.month,
-        nowChart.day,
-      ).subtract(const Duration(days: 29));
-      chartData = await transactionRepo.getDailyTotals(
-        type: 'expense',
-        from: fromChart,
-        to: nowChart,
+      final expense = await transactionRepo.getRangeTotal(
+        'expense',
+        from: from,
+        to: to,
         accountId: selectedId,
       );
-    } else {
-      // This Year
-      fromChart = DateTime(nowChart.year, 1, 1);
-      chartData = await transactionRepo.getRangeMonthlyTotals(
-        type: 'expense',
-        from: fromChart,
-        to: nowChart,
+      final recent = await transactionRepo.getTransactions(
+        from: from,
+        to: to,
+        limit: 8,
+        accountId: selectedId,
       );
-    }
 
-    if (mounted) {
-      setState(() {
-        _balance = balance;
-        _monthIncome = income;
-        _monthExpense = expense;
-        _recent = recent;
-        _weeklyExpenses = chartData;
-        _loading = false;
-      });
+      if (mounted && request == _dataRequest) {
+        setState(() {
+          _dataScope = scope;
+          _dashboardAccountId = selectedId;
+          _cashFlowLoading = false;
+          if (!localRefresh) _chartRefreshToken++;
+          _hasDashboardData = true;
+          _refreshing = false;
+          _balance = balance;
+          _monthIncome = income;
+          _monthExpense = expense;
+          _recent = recent;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted && request == _dataRequest) {
+        setState(() {
+          _loading = false;
+          _refreshing = false;
+          _cashFlowLoading = false;
+          if (localRefresh) {
+            _cashFlowError = 'Could not load this period.';
+          } else {
+            _loadError = 'Could not refresh your dashboard. Please retry.';
+          }
+        });
+      }
     }
   }
 
@@ -302,7 +265,9 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     final colorScheme = theme.colorScheme;
 
     if (_requirementsMet == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        body: PageLoading(summary: true, label: 'Opening dashboard'),
+      );
     }
 
     if (!_requirementsMet!) {
@@ -311,53 +276,67 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
       );
     }
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: theme.brightness == Brightness.dark
-            ? Brightness.light
-            : Brightness.dark,
-        statusBarBrightness: theme.brightness, // For iOS
-      ),
-      child: Scaffold(
-        floatingActionButton: Showcase(
-          key: _voiceFabKey,
-          description: 'Hold to speak your expense, or tap to scan a receipt.',
-          child: _buildVoiceButton(),
+    return HomeBackHandler(
+      selectedIndex: _currentIndex,
+      onReturnHome: () => setState(() => _currentIndex = 0),
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: theme.brightness == Brightness.dark
+              ? Brightness.light
+              : Brightness.dark,
+          statusBarBrightness: theme.brightness, // For iOS
         ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-        bottomNavigationBar: _buildBottomNav(theme),
-        body: MultiBlocListener(
-          listeners: [
-            BlocListener<TransactionBloc, TransactionState>(
-              listener: (context, state) {
-                if (state is TransactionLoaded) _loadData(silent: true);
-              },
-            ),
-            BlocListener<AccountBloc, AccountState>(
-              listener: (context, state) {
-                if (state is AccountLoaded) _loadData(silent: true);
-              },
-            ),
-          ],
-          child: Container(
-            decoration: BoxDecoration(color: colorScheme.surface),
-            child: Stack(
-              children: [
-                SafeArea(
-                  child: IndexedStack(
-                    index: _currentIndex,
-                    children: [
-                      _buildDashboardView(theme),
-                      TransactionListScreen(onRefresh: _loadData, isActive: _currentIndex == 1),
-                      BudgetScreen(onRefresh: _loadData, isActive: _currentIndex == 2),
-                      AccountManagementScreen(isActive: _currentIndex == 3),
-                      SettingsScreen(isActive: _currentIndex == 4),
-                    ],
+        child: Scaffold(
+          bottomNavigationBar: _buildBottomNav(theme),
+          body: MultiBlocListener(
+            listeners: [
+              BlocListener<TransactionBloc, TransactionState>(
+                listener: (context, state) {
+                  if (state is TransactionLoaded) _loadData(silent: true);
+                },
+              ),
+              BlocListener<AccountBloc, AccountState>(
+                listener: (context, state) {
+                  if (state is AccountLoaded &&
+                      !state.refreshing &&
+                      state.refreshError == null) {
+                    _loadData(silent: true);
+                  }
+                },
+              ),
+            ],
+            child: Container(
+              decoration: BoxDecoration(color: colorScheme.surface),
+              child: Stack(
+                children: [
+                  SafeArea(
+                    child: IndexedStack(
+                      index: _currentIndex,
+                      children: [
+                        _buildDashboardView(theme),
+                        _visitedTabs.contains(1)
+                            ? TransactionListScreen(
+                                onRefresh: _loadData,
+                                isActive: _currentIndex == 1,
+                              )
+                            : const SizedBox.shrink(),
+                        _visitedTabs.contains(2)
+                            ? BudgetScreen(
+                                onRefresh: _loadData,
+                                isActive: _currentIndex == 2,
+                              )
+                            : const SizedBox.shrink(),
+                        _visitedTabs.contains(3)
+                            ? AccountManagementScreen(
+                                isActive: _currentIndex == 3,
+                              )
+                            : const SizedBox.shrink(),
+                      ],
+                    ),
                   ),
-                ),
-                if (_isListening || _isAiThinking) _buildVoiceOverlay(theme),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -365,45 +344,139 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     );
   }
 
-  Widget _buildDashboardView(ThemeData theme) {
-    return RefreshIndicator(
-      onRefresh: () => _loadData(silent: true),
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          _buildAppBar(theme),
-          SliverToBoxAdapter(child: _buildHeadsUpReminder(theme)),
-          _buildAccountSelectorChips(theme),
-          SliverToBoxAdapter(child: _buildBalanceCard(theme)),
-          SliverToBoxAdapter(
-            child: _buildQuickActions(theme),
-          ),
-          SliverToBoxAdapter(
-            child: _buildSectionHeader(
-              theme,
-              'Spending Overview',
-              trailing: _buildChartPeriodSelector(theme),
+  Widget _buildSmsSetupCard() => FutureBuilder<bool>(
+    future: () async {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('sms_setup_dismissed') ?? false) return false;
+      final enabled = await SmsTrackingPreference.isEnabled();
+      if (!mounted) return false;
+      final accounts = await context.read<AccountRepository>().getAll();
+      return !enabled || !accounts.any(AccountEditor.hasSmsDetails);
+    }(),
+    builder: (context, snapshot) {
+      if (snapshot.data != true) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Track bank SMS',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Dismiss SMS setup',
+                      icon: const Icon(AppIcons.close),
+                      onPressed: () async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('sms_setup_dismissed', true);
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                  ],
+                ),
+                const Text('Automatically match new bank transactions.'),
+                const SizedBox(height: 8),
+                FilledButton(
+                  onPressed: () async {
+                    await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const SmsTrackingScreen(),
+                      ),
+                    );
+                    if (mounted) setState(() {});
+                  },
+                  child: const Text('Set up SMS tracking'),
+                ),
+              ],
             ),
           ),
-          SliverToBoxAdapter(child: _buildSpendingChart(theme)),
-          SliverToBoxAdapter(
-            child: _buildSectionHeader(theme, 'Recent Transactions'),
-          ),
-          if (_loading)
-            const SliverToBoxAdapter(
-              child: Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32),
-                  child: CircularProgressIndicator(),
+        ),
+      );
+    },
+  );
+
+  Widget _buildDashboardView(ThemeData theme) {
+    return LoadingFeedback(
+      loading: _refreshing,
+      error: _hasDashboardData ? _loadError : null,
+      onRetry: () => _loadData(),
+      child: RefreshIndicator(
+        onRefresh: () => _loadData(silent: true),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            _buildAppBar(theme),
+            SliverToBoxAdapter(child: _buildSmsSetupCard()),
+            SliverToBoxAdapter(child: _buildHeadsUpReminder(theme)),
+            _buildAccountSelectorChips(theme),
+            if (_loadError != null && !_hasDashboardData)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: PageLoadFailure(
+                  onRetry: () => _loadData(),
+                  message: 'Could not load your dashboard.',
+                ),
+              )
+            else if (_loading)
+              const SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 520,
+                  child: PageLoading(summary: true, label: 'Loading dashboard'),
+                ),
+              )
+            else ...[
+              SliverToBoxAdapter(child: _buildBalanceCard(theme)),
+              SliverToBoxAdapter(
+                child: HomeSpendingChart(
+                  repository: context.read<TransactionRepository>(),
+                  accountId: context.read<AccountBloc>().state is AccountLoaded
+                      ? (context.read<AccountBloc>().state as AccountLoaded)
+                            .selectedAccountId
+                      : null,
+                  refreshToken: _chartRefreshToken,
+                  initialPeriod: _chartPeriod,
+                  onPeriodChanged: (period) => _chartPeriod = period,
                 ),
               ),
-            )
-          else if (_recent.isEmpty)
-            SliverToBoxAdapter(child: _buildEmptyState(theme))
-          else
-            _buildRecentTransactions(theme),
-          const SliverToBoxAdapter(child: SizedBox(height: 100)),
-        ],
+              SliverToBoxAdapter(
+                child: _buildSectionHeader(theme, 'Recent Transactions'),
+              ),
+              if (_cashFlowLoading)
+                const SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 220,
+                    child: PageLoading(
+                      label: 'Loading transactions for this period',
+                    ),
+                  ),
+                )
+              else if (_cashFlowError != null)
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 220,
+                    child: PageLoadFailure(
+                      message: _cashFlowError!,
+                      onRetry: () => _loadData(cashFlowOnly: true),
+                    ),
+                  ),
+                )
+              else if (_recent.isEmpty)
+                SliverToBoxAdapter(child: _buildEmptyState(theme))
+              else
+                _buildRecentTransactions(theme),
+            ],
+            const SliverToBoxAdapter(child: SizedBox(height: 100)),
+          ],
+        ),
       ),
     );
   }
@@ -425,8 +498,8 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                         borderRadius: BorderRadius.circular(8),
                         child: Image.asset(
                           'assets/images/logo.png',
-                          height: 28,
-                          width: 28,
+                          height: 32,
+                          width: 32,
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -443,33 +516,25 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
               ),
             ),
             // Removed _buildAccountSelector from Row
-            Showcase(
-              key: _aiChatKey,
-              description: 'Chat with Spendy AI for instant financial advice.',
-              child: IconButton(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ChatScreen()),
-                ),
-                icon: Icon(
-                  Icons.psychology_outlined,
-                  size: 24,
-                  color: cs.primary,
-                ),
-                tooltip: 'Ask Spendy AI',
+            IconButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ChatScreen()),
               ),
+              icon: Icon(
+                AppIcons.chat,
+                size: AppIcons.actionSize,
+                color: AppIcons.actionColor(theme),
+              ),
+              tooltip: 'Ask Spendy AI',
             ),
-            Showcase(
-              key: _moreMenuKey,
-              description: 'This menu contains Settings, Subscriptions, and Appliances. Tap here to manage your app preferences.',
-              child: IconButton(
-                onPressed: _openMoreSheet,
-                icon: Icon(
-                  Icons.grid_view_rounded,
-                  size: 22,
-                  color: cs.onSurfaceVariant,
-                ),
-                tooltip: 'More',
+            IconButton(
+              tooltip: 'More tools',
+              onPressed: _openMoreSheet,
+              icon: Icon(
+                AppIcons.tools,
+                size: AppIcons.actionSize,
+                color: cs.onSurfaceVariant,
               ),
             ),
           ],
@@ -480,126 +545,71 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
 
   Widget _buildHeadsUpReminder(ThemeData theme) {
     return BlocBuilder<ReminderBloc, ReminderState>(
-      builder: (context, state) {
-        if (state is! ReminderLoaded) return const SizedBox.shrink();
-
-        final activeReminders = state.reminders
-            .where((r) => r.isOverdue || r.isDueSoon)
-            .toList();
-        if (activeReminders.isEmpty) return const SizedBox.shrink();
-
-        // Show the most urgent one
-        final r = activeReminders.first;
-        final isOverdue = r.isOverdue;
-
-        return Container(
-          margin: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: isOverdue
-                  ? [
-                      Colors.red.shade900.withOpacity(0.8),
-                      Colors.red.shade800.withOpacity(0.6),
-                    ]
-                  : [
-                      theme.colorScheme.primary.withOpacity(0.15),
-                      theme.colorScheme.primary.withOpacity(0.05),
+      builder: (context, reminders) => BlocBuilder<SubscriptionBloc, SubscriptionState>(
+        builder: (context, subscriptions) {
+          final now = DateTime.now();
+          if (reminders is ReminderLoaded &&
+              subscriptions is SubscriptionLoaded) {
+            _lastUpcoming = upcomingPayments(
+              reminders.reminders,
+              subscriptions.subscriptions,
+              now,
+            );
+          }
+          final rows = _lastUpcoming;
+          if (rows.isEmpty) return const SizedBox.shrink();
+          final overdue = rows.where((r) => r.overdue(now)).toList();
+          final due = rows.where((r) => !r.overdue(now)).toList();
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+            child: Card(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const UpcomingPaymentsScreen(),
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(AppIcons.payments),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Upcoming payments',
+                              style: theme.textTheme.titleMedium,
+                            ),
+                          ),
+                          const Icon(AppIcons.chevron),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      const Text('All accounts'),
+                      Text(
+                        '${due.length} due in the next 7 days · ${BudgetUpdateService.amount(due.fold<int>(0, (s, r) => s + r.cents))}',
+                      ),
+                      if (overdue.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            '${overdue.length} overdue · ${BudgetUpdateService.amount(overdue.fold<int>(0, (s, r) => s + r.cents))}',
+                            style: TextStyle(color: theme.colorScheme.error),
+                          ),
+                        ),
                     ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: isOverdue
-                  ? Colors.red.withOpacity(0.3)
-                  : theme.colorScheme.primary.withOpacity(0.2),
-            ),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: isOverdue ? Colors.red : theme.colorScheme.primary,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  isOverdue
-                      ? Icons.priority_high_rounded
-                      : Icons.notifications_active_rounded,
-                  color: Colors.white,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isOverdue ? 'BILL OVERDUE' : 'REMINDER',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: isOverdue
-                            ? Colors.red.shade100
-                            : theme.colorScheme.primary,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${r.title}: ${_rupeeFmt.format(r.amount)}',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: isOverdue
-                            ? Colors.white
-                            : theme.colorScheme.onSurface,
-                      ),
-                    ),
-                    Text(
-                      isOverdue
-                          ? 'Immediate payment required'
-                          : 'Due on ${DateFormat('d MMM').format(r.dueDate)}',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color:
-                            (isOverdue
-                                    ? Colors.white
-                                    : theme.colorScheme.onSurface)
-                                .withOpacity(0.7),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const RemindersScreen()),
-                  );
-                },
-                style: TextButton.styleFrom(
-                  backgroundColor: isOverdue
-                      ? Colors.white.withOpacity(0.2)
-                      : theme.colorScheme.primary.withOpacity(0.1),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: Text(
-                  'VIEW',
-                  style: TextStyle(
-                    color: isOverdue ? Colors.white : theme.colorScheme.primary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
                   ),
                 ),
               ),
-            ],
-          ),
-        );
-      },
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -622,7 +632,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                 : null;
 
             return SizedBox(
-              height: 48,
+              height: 32 + 24 * MediaQuery.textScalerOf(context).scale(1),
               child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 scrollDirection: Axis.horizontal,
@@ -636,7 +646,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                         onPressed: () =>
                             _showAccountSearchSheet(context, accounts),
                         icon: Icon(
-                          Icons.search_rounded,
+                          AppIcons.search,
                           color: cs.primary,
                           size: 20,
                         ),
@@ -765,424 +775,136 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
   }
 
   Widget _buildBalanceCard(ThemeData theme) {
-    final cs = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
+    final state = context.watch<AccountBloc>().state;
+    final balance = state is AccountLoaded
+        ? (state.selectedAccountId == null
+              ? state.totalBalance
+              : state.selectedAccount?.balance ?? state.totalBalance)
+        : _balance;
+    final caption = state is AccountLoaded && state.selectedAccount != null
+        ? state.selectedAccount!.name
+        : 'Across all your accounts';
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: cs.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Label row
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primary.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'NET BALANCE',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: AppTheme.primary,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _showDateFilter,
-                  behavior: HitTestBehavior.opaque,
-                  child: Row(
-                    children: [
-                      Text(
-                        _dateLabel,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: AppTheme.primary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Icon(
-                        Icons.keyboard_arrow_down_rounded,
-                        size: 14,
-                        color: AppTheme.primary,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // Big balance — read directly from AccountBloc so it updates instantly
-            BlocBuilder<AccountBloc, AccountState>(
-              builder: (context, accState) {
-                if (_loading) {
-                  return Container(
-                    height: 38,
-                    width: 140,
-                    decoration: BoxDecoration(
-                      color: cs.surfaceVariant,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  );
-                }
-                final liveBalance = accState is AccountLoaded
-                    ? (accState.selectedAccountId != null
-                          ? (accState.selectedAccount?.balance ??
-                                accState.totalBalance)
-                          : accState.totalBalance)
-                    : _balance;
-                return Text(
-                  _rupeeFmt.format(liveBalance),
-                  style: theme.textTheme.displayLarge,
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-            // Divider
-            Divider(
-              height: 1,
-              color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-            ),
-            const SizedBox(height: 14),
-            // Income / Expense row
-            Row(
-              children: [
-                Expanded(
-                  child: StatTile(
-                    label: 'INCOME',
-                    value: _rupeeFmt.format(_monthIncome),
-                    valueColor: AppTheme.income,
-                    icon: Icons.arrow_downward_rounded,
-                  ),
-                ),
-                Container(
-                  width: 1,
-                  height: 32,
-                  color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 16),
-                    child: StatTile(
-                      label: 'EXPENSES',
-                      value: _rupeeFmt.format(_monthExpense),
-                      valueColor: AppTheme.expense,
-                      icon: Icons.arrow_upward_rounded,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildQuickActions(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildQuickBtn(
-            theme,
-            Icons.document_scanner_rounded,
-            'Scan',
-            const Color(0xFFF59E0B),
-            () => _handleScan(),
+          FinanceSummaryCard(
+            label: 'Available balance',
+            value: _loading ? '—' : _rupeeFmt.format(balance),
+            caption: caption,
           ),
-          const SizedBox(width: 8),
-          _buildQuickBtn(
-            theme,
-            Icons.edit_rounded,
-            'Manual',
-            const Color(0xFF0EA5E9),
-            () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const TransactionEntryScreen(),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final heading = Padding(
+                padding: const EdgeInsetsDirectional.only(start: 12),
+                child: Text(
+                  'Your cash flow',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               );
-              if (mounted) _loadData();
+              final period = TextButton.icon(
+                onPressed: _showDateFilter,
+                iconAlignment: IconAlignment.end,
+                icon: const Icon(AppIcons.expand, size: 18),
+                label: Text(_dateLabel),
+              );
+              if (MediaQuery.textScalerOf(context).scale(1) > 1.25 ||
+                  _dateLabel.length > 18) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    heading,
+                    const SizedBox(height: 4),
+                    Align(alignment: Alignment.centerRight, child: period),
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: heading),
+                  const SizedBox(width: 12),
+                  period,
+                ],
+              );
             },
           ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _buildCashFlowTile(
+                  theme,
+                  'Income',
+                  _monthIncome,
+                  AppTheme.income,
+                  Icons.south_west_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildCashFlowTile(
+                  theme,
+                  'Expenses',
+                  _monthExpense,
+                  AppTheme.expense,
+                  Icons.north_east_rounded,
+                ),
+              ),
+            ],
+          ),
+          if (_cashFlowError != null)
+            TextButton.icon(
+              onPressed: () => _loadData(cashFlowOnly: true),
+              icon: const Icon(Icons.refresh_rounded),
+              label: Text('${_cashFlowError!} Retry'),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildQuickBtn(
+  Widget _buildCashFlowTile(
     ThemeData theme,
-    IconData icon,
     String label,
+    double amount,
     Color color,
-    VoidCallback onTap,
+    IconData icon,
   ) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withOpacity(0.18)),
-          ),
-          child: Column(
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .045),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withValues(alpha: .12)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Icon(icon, color: color, size: 18),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.3,
-                ),
-              ),
+              Icon(icon, size: 16, color: color),
+              Text(label, style: theme.textTheme.bodySmall),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSpendingChart(ThemeData theme) {
-    final now = DateTime.now();
-    List<DateTime> periods = [];
-    int count = 0;
-
-    if (_chartPeriod == '7 Days') {
-      count = 7;
-      periods = List.generate(7, (i) => now.subtract(Duration(days: 6 - i)));
-    } else if (_chartPeriod == '30 Days') {
-      count = 30;
-      periods = List.generate(30, (i) => now.subtract(Duration(days: 29 - i)));
-    } else {
-      // This Year
-      count = 12;
-      periods = List.generate(12, (i) => DateTime(now.year, i + 1, 1));
-    }
-
-    final maxVal = _weeklyExpenses.values.isEmpty
-        ? 1000.0
-        : _weeklyExpenses.values
-              .reduce((a, b) => a > b ? a : b)
-              .clamp(100.0, double.infinity);
-    // Calculate a nice interval for Y axis (approx 4-5 labels)
-    double interval = 100;
-    if (maxVal <= 200) {
-      interval = 50;
-    } else if (maxVal <= 500) {
-      interval = 100;
-    } else if (maxVal <= 2500) {
-      interval = 500;
-    } else if (maxVal <= 10000) {
-      interval = 2000;
-    } else {
-      interval = (maxVal / 4).ceilToDouble();
-    }
-
-    // Force maxY to be a multiple of interval for cleaner grid
-    final maxY = ((maxVal * 1.25) / interval).ceil() * interval;
-
-    return Container(
-      height: 220,
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      padding: const EdgeInsets.fromLTRB(8, 20, 16, 8),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: theme.brightness == Brightness.dark
-              ? AppTheme.darkBorder
-              : AppTheme.lightBorder,
-        ),
-      ),
-      child: BarChart(
-        BarChartData(
-          gridData: FlGridData(
-            show: true,
-            drawVerticalLine: false,
-            getDrawingHorizontalLine: (v) => FlLine(
-              color: theme.colorScheme.onSurface.withOpacity(0.06),
-              strokeWidth: 1,
+          const SizedBox(height: 10),
+          Text(
+            _loading || _cashFlowLoading || _cashFlowError != null
+                ? '—'
+                : _rupeeFmt.format(amount),
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: color,
             ),
           ),
-          titlesData: FlTitlesData(
-            rightTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            topTitles: const AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 28,
-                getTitlesWidget: (v, _) {
-                  final i = v.toInt();
-                  if (i < 0 || i >= periods.length) return const SizedBox();
-
-                  // Adaptive labels
-                  String label = '';
-                  if (_chartPeriod == '7 Days') {
-                    label = DateFormat('E').format(periods[i]);
-                  } else if (_chartPeriod == '30 Days') {
-                    // Show label every 7 days for 30 day view, but avoid overlap with last item
-                    if (i % 7 == 0 && i < periods.length - 4) {
-                      label = DateFormat('d/M').format(periods[i]);
-                    } else if (i == periods.length - 1) {
-                      label = DateFormat('d/M').format(periods[i]);
-                    }
-                  } else {
-                    // This Year - show month initials
-                    label = DateFormat('MMM').format(periods[i])[0];
-                  }
-
-                  if (label.isEmpty) return const SizedBox();
-
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        color: theme.colorScheme.onSurface.withOpacity(0.5),
-                        fontSize: 10,
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            leftTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 44,
-                interval: interval,
-                getTitlesWidget: (v, _) {
-                  if (v == 0) return const SizedBox();
-                  String text;
-                  if (v >= 1000) {
-                    text =
-                        '₹${(v / 1000).toStringAsFixed(v % 1000 == 0 ? 0 : 1)}k';
-                  } else {
-                    text = '₹${v.toInt()}';
-                  }
-                  return Text(
-                    text,
-                    style: TextStyle(
-                      color: theme.colorScheme.onSurface.withOpacity(0.4),
-                      fontSize: 10,
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-          borderData: FlBorderData(show: false),
-          maxY: maxY,
-          barGroups: List.generate(count, (i) {
-            String key;
-            if (_chartPeriod == 'This Year') {
-              key = DateFormat('yyyy-MM').format(periods[i]);
-            } else {
-              key = DateFormat('yyyy-MM-dd').format(periods[i]);
-            }
-
-            final val = _weeklyExpenses[key] ?? 0;
-            return BarChartGroupData(
-              x: i,
-              barRods: [
-                BarChartRodData(
-                  toY: val,
-                  color: val > 0
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.primary.withOpacity(0.15),
-                  width: _chartPeriod == '30 Days'
-                      ? 6
-                      : (_chartPeriod == 'This Year' ? 14 : 16),
-                  borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(4),
-                  ),
-                ),
-              ],
-            );
-          }),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildChartPeriodSelector(ThemeData theme) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: ['7D', '30D', 'Year'].map((p) {
-          final isSelected =
-              (_chartPeriod == '7 Days' && p == '7D') ||
-              (_chartPeriod == '30 Days' && p == '30D') ||
-              (_chartPeriod == 'This Year' && p == 'Year');
-          return GestureDetector(
-            onTap: () {
-              setState(() {
-                if (p == '7D') _chartPeriod = '7 Days';
-                if (p == '30D') _chartPeriod = '30 Days';
-                if (p == 'Year') _chartPeriod = 'This Year';
-              });
-              _loadData();
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? theme.colorScheme.surface
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(6),
-                boxShadow: isSelected
-                    ? [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ]
-                    : null,
-              ),
-              child: Text(
-                p,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: isSelected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurface.withOpacity(0.5),
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  fontSize: 10,
-                ),
-              ),
-            ),
-          );
-        }).toList(),
+        ],
       ),
     );
   }
@@ -1192,39 +914,42 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     String title, {
     Widget? trailing,
   }) {
+    final heading = Text(
+      title,
+      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+    );
+    final action =
+        trailing ??
+        TextButton(
+          onPressed: () => setState(() {
+            _visitedTabs.add(1);
+            _currentIndex = 1;
+          }),
+          child: const Text('View all'),
+        );
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 12, 8),
-      child: Row(
-        children: [
-          Text(
-            title.toUpperCase(),
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              letterSpacing: 1.2,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const Spacer(),
-          if (trailing != null)
-            trailing
-          else
-            TextButton(
-              onPressed: () => setState(() => _currentIndex = 1),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              child: Text(
-                'View All',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: AppTheme.primary,
-                  letterSpacing: 0.5,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-        ],
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 330 ||
+              MediaQuery.textScalerOf(context).scale(1) > 1.3) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                heading,
+                const SizedBox(height: 8),
+                Align(alignment: Alignment.centerRight, child: action),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: heading),
+              const SizedBox(width: 12),
+              action,
+            ],
+          );
+        },
       ),
     );
   }
@@ -1263,14 +988,18 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  t.merchant.isNotEmpty ? t.merchant : t.category,
+                  t.merchant.isNotEmpty
+                      ? t.merchant
+                      : t.note.isNotEmpty
+                      ? t.note
+                      : t.category,
                   style: theme.textTheme.titleSmall,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 1),
                 Text(
-                  '${t.category} · ${DateFormat('d MMM').format(t.date)}',
+                  '${t.merchant.isEmpty && t.note.isEmpty ? '' : '${t.category} · '}${DateFormat('d MMM').format(t.date)}',
                   style: theme.textTheme.bodySmall,
                 ),
               ],
@@ -1296,7 +1025,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
         child: Column(
           children: [
             Icon(
-              Icons.receipt_long_rounded,
+              AppIcons.transactions,
               size: 64,
               color: theme.colorScheme.primary.withOpacity(0.3),
             ),
@@ -1309,7 +1038,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
             ),
             const SizedBox(height: 8),
             Text(
-              'Tap + to add your first one!',
+              'Add an expense to see where your money goes.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withOpacity(0.4),
               ),
@@ -1320,209 +1049,181 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     );
   }
 
-  Widget _buildBottomNav(ThemeData theme) {
-    return BottomAppBar(
-      color: theme.colorScheme.surface,
-      elevation: 10,
-      surfaceTintColor: theme.colorScheme.surface,
-      shadowColor: Colors.black.withOpacity(0.1),
-      notchMargin: 8,
-      padding: EdgeInsets.zero,
-      height: 65,
-      shape: const CircularNotchedRectangle(),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildNavItem(theme, 0, Icons.grid_view_rounded, 'Home'),
-          _buildNavItem(theme, 1, Icons.receipt_long_rounded, 'Passbook'),
-          const SizedBox(width: 40), // FAB notch gap
-          _buildNavItem(theme, 2, Icons.pie_chart_rounded, 'Budget'),
-          Showcase(
-            key: _accountsTabKey,
-            description: "First step: Go to Accounts to add bank wallets. CRITICAL: You must enter the correct Bank Name and Last 4 Digits for automatic SMS tracking to work!",
-            child: _buildNavItem(
-              theme,
-              3,
-              Icons.account_balance_wallet_rounded,
-              'Accounts',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNavItem(
-    ThemeData theme,
-    int index,
-    IconData icon,
-    String label,
-  ) {
-    bool isSelected = _currentIndex == index;
-    final color = isSelected
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurface.withOpacity(0.6);
-    return InkWell(
-      onTap: () {
-        setState(() => _currentIndex = index);
-        if (index == 0) {
-          _checkAndStartTutorial();
-        }
-      },
-      customBorder: const CircleBorder(),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 26),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 10,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildBottomNav(ThemeData theme) => SpendyBottomBar(
+    selectedIndex: _currentIndex,
+    onSelect: (index) {
+      setState(() {
+        _visitedTabs.add(index);
+        _currentIndex = index;
+      });
+    },
+    onAdd: _openAddSheet,
+  );
 
   void _openMoreSheet() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
         final theme = Theme.of(ctx);
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurface.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * .85,
+            ),
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 16,
                 ),
-                const SizedBox(height: 24),
-                Text(
-                  'Quick Access'.toUpperCase(),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                GridView.count(
-                  shrinkWrap: true,
-                  crossAxisCount: 4,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 0.85,
-                  physics: const NeverScrollableScrollPhysics(),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildMoreItem(
-                      ctx,
-                      Icons.psychology_rounded,
-                      'AI Chat',
-                      () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const ChatScreen()),
-                        );
-                      },
-                    ),
-                    _buildMoreItem(ctx, Icons.bar_chart_rounded, 'Reports', () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ReportsScreen(),
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.onSurface.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(2),
                         ),
-                      );
-                    }),
-                    _buildMoreItem(ctx, Icons.savings_rounded, 'Goals', () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const GoalsScreen()),
-                      );
-                    }),
-                    _buildMoreItem(ctx, Icons.alarm_rounded, 'Reminders', () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const RemindersScreen(),
-                        ),
-                      );
-                    }),
-                    _buildMoreItem(
-                      ctx,
-                      Icons.category_rounded,
-                      'Categories',
-                      () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const CategoriesScreen(),
-                          ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'More tools',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Plan, track and organize your money.',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final singleColumn =
+                            constraints.maxWidth < 280 ||
+                            MediaQuery.textScalerOf(ctx).scale(1) > 1.3;
+                        final width = singleColumn
+                            ? constraints.maxWidth
+                            : (constraints.maxWidth - 12) / 2;
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children:
+                              [
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.reports,
+                                      'Reports',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const ReportsScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.goals,
+                                      'Goals',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) => const GoalsScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.payments,
+                                      'Payments',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const UpcomingPaymentsScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.categories,
+                                      'Categories',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const CategoriesScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.appliances,
+                                      'Appliances',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const AppliancesScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _buildMoreItem(
+                                      ctx,
+                                      AppIcons.settings,
+                                      'Settings',
+                                      () {
+                                        Navigator.pop(ctx);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const SettingsScreen(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ]
+                                  .map(
+                                    (child) =>
+                                        SizedBox(width: width, child: child),
+                                  )
+                                  .toList(),
                         );
                       },
                     ),
-                    _buildMoreItem(
-                      ctx,
-                      Icons.devices_other_rounded,
-                      'Appliances',
-                      () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const AppliancesScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                    _buildMoreItem(
-                      ctx,
-                      Icons.autorenew_rounded,
-                      'Subscriptions',
-                      () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const SubscriptionsScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                    _buildMoreItem(ctx, Icons.settings_rounded, 'Settings', () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const SettingsScreen(),
-                        ),
-                      );
-                    }),
+                    const SizedBox(height: 8),
                   ],
                 ),
-                const SizedBox(height: 24),
-              ],
+              ),
             ),
           ),
         );
@@ -1551,7 +1252,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Filter Dashboard',
+                'Cash-flow period',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
@@ -1624,7 +1325,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
       from = DateTime(now.year, 1, 1);
       to = DateTime(now.year, 12, 31, 23, 59, 59);
     } else if (period == 'Custom Range') {
-      final picked = await showDateRangePicker(
+      final picked = await showAppDateRangePicker(
         context: context,
         firstDate: DateTime(2000),
         lastDate: DateTime(2100),
@@ -1649,12 +1350,13 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
       label = 'All Time';
     }
 
+    if (!mounted) return;
     setState(() {
       _filterDateFrom = from;
       _filterDateTo = to;
       _dateLabel = label;
     });
-    _loadData();
+    _loadData(cashFlowOnly: true);
   }
 
   Widget _buildMoreItem(
@@ -1664,259 +1366,127 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     VoidCallback onTap,
   ) {
     final theme = Theme.of(ctx);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-              ),
-            ),
-            child: Icon(icon, color: theme.colorScheme.primary, size: 22),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onSurface.withOpacity(0.6),
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
-            ),
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVoiceButton() {
-    if (_isListening || _isAiThinking) return const SizedBox.shrink();
-
-    return GestureDetector(
-      onTap: _toggleListening,
-      child: Container(
-        width: 64,
-        height: 64,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-            colors: [AppTheme.primary, AppTheme.accent],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppTheme.primary.withOpacity(0.3),
-              blurRadius: 15,
-              offset: const Offset(0, 5),
-            ),
-          ],
+    return Material(
+      color: theme.colorScheme.primary.withValues(alpha: .055),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: theme.colorScheme.primary.withValues(alpha: .10),
         ),
-        child: const Icon(Icons.mic_rounded, color: Colors.white, size: 30),
       ),
-    );
-  }
-
-  Widget _buildVoiceOverlay(ThemeData theme) {
-    return BackdropFilter(
-      filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-      child: Container(
-        color: Colors.black.withOpacity(0.6),
-        width: double.infinity,
-        height: double.infinity,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Close button
-            Positioned(
-              top: 40,
-              right: 20,
-              child: IconButton(
-                icon: const Icon(
-                  Icons.close_rounded,
-                  color: Colors.white,
-                  size: 32,
-                ),
-                onPressed: () {
-                  _voiceService.stopListening();
-                  setState(() {
-                    _isListening = false;
-                    _isAiThinking = false;
-                  });
-                },
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                icon,
+                color: AppIcons.actionColor(theme),
+                size: AppIcons.actionSize,
               ),
-            ),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Outer pulsing ring
-                    AnimatedBuilder(
-                      animation: _pulseController,
-                      builder: (context, child) {
-                        return Container(
-                          width: 140 + (60 * _pulseController.value),
-                          height: 140 + (60 * _pulseController.value),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: AppTheme.accent.withOpacity(
-                                1 - _pulseController.value,
-                              ),
-                              width: 3,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    // Inner orbiting ring
-                    RotationTransition(
-                      turns: _orbitController,
-                      child: Container(
-                        width: 110,
-                        height: 110,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.2),
-                            width: 1,
-                          ),
-                        ),
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: Container(
-                            width: 10,
-                            height: 10,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppTheme.accent,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Center core
-                    Container(
-                      width: 90,
-                      height: 90,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: [AppTheme.primary, AppTheme.accent],
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppTheme.primary,
-                            blurRadius: 30,
-                            spreadRadius: 2,
-                          ),
-                        ],
-                      ),
-                      child: Icon(
-                        _isAiThinking
-                            ? Icons.auto_awesome_rounded
-                            : Icons.mic_rounded,
-                        color: Colors.white,
-                        size: 44,
-                      ),
-                    ),
-                  ],
+              const SizedBox(height: 12),
+              Text(
+                label,
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
-                const SizedBox(height: 60),
-                Shimmer.fromColors(
-                  baseColor: Colors.white,
-                  highlightColor: AppTheme.accent,
-                  child: Text(
-                    _isAiThinking ? 'AI IS THINKING...' : 'LISTENING...',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 4,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 40),
-                  child: Text(
-                    _isAiThinking
-                        ? 'Spendy is processing your request'
-                        : 'Say something like "I spent 500 on dinner"',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.6),
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+                softWrap: true,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  void _toggleListening() async {
-    if (_isListening) {
-      await _voiceService.stopListening();
-      setState(() => _isListening = false);
-    } else {
-      setState(() => _isListening = true);
-      bool started = await _voiceService.startListening((text) {
-        if (text.isNotEmpty) {
-          _handleVoiceCommand(text);
-        }
-      });
-      if (!started && mounted) {
-        setState(() => _isListening = false);
-      }
+  Future<void> _openAddSheet() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+                child: Text(
+                  'Add a transaction',
+                  style: Theme.of(ctx).textTheme.headlineSmall,
+                ),
+              ),
+              ListTile(
+                leading: const Icon(AppIcons.edit),
+                title: const Text('Enter manually'),
+                subtitle: const Text('A quick amount, account and category'),
+                onTap: () => Navigator.pop(ctx, 'manual'),
+              ),
+              ListTile(
+                leading: const Icon(AppIcons.scan),
+                title: const Text('Scan a receipt'),
+                subtitle: const Text('Review the details before saving'),
+                onTap: () => Navigator.pop(ctx, 'scan'),
+              ),
+              ListTile(
+                leading: const Icon(AppIcons.voice),
+                title: const Text('Use your voice'),
+                subtitle: const Text('Say what you spent and where'),
+                onTap: () => Navigator.pop(ctx, 'voice'),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'voice') {
+      _toggleListening();
+      return;
     }
+    if (action == 'scan') {
+      _handleScan();
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const TransactionEntryScreen()),
+    );
+    if (mounted) _loadData();
   }
 
-  void _handleVoiceCommand(String text) async {
-    if (_isAiThinking) return;
-
-    setState(() {
-      _isListening = false;
-      _isAiThinking = true;
-    });
-
+  Future<void> _toggleListening() async {
+    if (_voiceEntryOpen) return;
+    _voiceEntryOpen = true;
     try {
-      // Quick attempt to initialize if not ready
-      if (!_aiService.isInitialized) {
-        await _aiService.init();
+      if (!await ensureFeatureAiReady(context, service: _aiService) ||
+          !mounted) {
+        return;
       }
-
-      final action = await _aiService.parseIntent(text);
-      if (!mounted) return;
-
-      if (action.type == AIActionType.chat) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(action.message ?? 'I didn\'t catch that.'),
-            behavior: SnackBarBehavior.floating,
+      final result = await showDialog<VoiceEntryResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => VoiceEntryDialog(
+          capture: _voiceService,
+          parse: _aiService.parseIntent,
+        ),
+      );
+      if (!mounted || result == null) return;
+      if (result.manual) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const TransactionEntryScreen(),
           ),
         );
-      } else {
-        await _executeAIAction(action);
+        if (mounted) _loadData(silent: true);
+      } else if (result.action != null) {
+        await _executeAIAction(result.action!);
       }
     } finally {
-      if (mounted) setState(() => _isAiThinking = false);
+      _voiceEntryOpen = false;
     }
   }
 
@@ -1938,8 +1508,88 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
     final transactionRepo = context.read<TransactionRepository>();
 
     if (action.type == AIActionType.add) {
-      // Streamlined Direct Save: If we have amount and category, save immediately
-      if (action.amount != null && action.amount! > 0) {
+      if (!isFromOcr && (action.items?.length ?? 0) > 1) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                TransactionEntryScreen(aiAction: action, isVoiceEntry: true),
+          ),
+        );
+        if (mounted) _loadData(silent: true);
+        return;
+      }
+      // AI-derived values must be reviewed before a financial commit.
+      if (action.amount != null &&
+          action.amount!.isFinite &&
+          action.amount! > 0) {
+        final choice = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Review transaction'),
+            scrollable: true,
+            content: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '₹${action.amount!.toStringAsFixed(2)}',
+                  style: Theme.of(ctx).textTheme.headlineMedium,
+                ),
+                const SizedBox(height: 12),
+                Text('Category: ${action.category ?? 'Other'}'),
+                if (action.merchant?.isNotEmpty ?? false)
+                  Text('Merchant: ${action.merchant}'),
+                Text(
+                  'Account: ${accountState is AccountLoaded ? accountState.accounts.firstWhereOrNull((a) => a.id == targetAccountId)?.name ?? 'Selected account' : 'Selected account'}',
+                ),
+                Text(
+                  'Date: ${DateFormat('d MMM yyyy').format(action.date ?? DateTime.now())}',
+                ),
+                if (action.items?.isNotEmpty ?? false) ...[
+                  const SizedBox(height: 12),
+                  const Text('Split items'),
+                  ...action.items!.map(
+                    (item) => Text(
+                      '${item.merchant ?? item.category}: ₹${item.amount.toStringAsFixed(2)}',
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                const Text('Check these details before saving.'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'edit'),
+                child: const Text('Edit details'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, 'save'),
+                child: const Text('Save expense'),
+              ),
+            ],
+          ),
+        );
+        if (!mounted || choice == null) return;
+        if (choice == 'edit') {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TransactionEntryScreen(
+                aiAction: action,
+                initialTab: isFromOcr ? 1 : 0,
+                isVoiceEntry: !isFromOcr,
+              ),
+            ),
+          );
+          if (mounted) _loadData();
+          return;
+        }
+        final completion = Completer<bool>();
         final t = TransactionModel(
           accountId: targetAccountId,
           amount: action.amount!,
@@ -1992,35 +1642,27 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                 note: '[Split] ${action.merchant ?? "Receipt"}'.trim(),
               ),
               splitChildren: parts,
+              completion: completion,
             ),
           );
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Scan: Added ${action.items!.length} items (Total ₹${action.amount!.toStringAsFixed(0)})',
-                ),
-                backgroundColor: AppTheme.income,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
         } else {
           // Standard Single Transaction
-          context.read<TransactionBloc>().add(AddTransaction(t));
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  '${isFromOcr ? "Scan" : "Voice"}: Added ₹${action.amount!.toStringAsFixed(0)} to ${action.category ?? "Other"}',
-                ),
-                backgroundColor: AppTheme.primary,
-                behavior: SnackBarBehavior.floating,
+          context.read<TransactionBloc>().add(
+            AddTransaction(t, completion: completion),
+          );
+        }
+        final saved = await completion.future;
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              persist: false,
+              content: Text(
+                saved
+                    ? 'Transaction saved'
+                    : 'Could not save this transaction. Please try again.',
               ),
-            );
-          }
+            ),
+          );
         }
         return;
       }
@@ -2032,34 +1674,44 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
           builder: (_) => TransactionEntryScreen(
             initialTab: isFromOcr ? 1 : 0,
             aiAction: action,
+            isVoiceEntry: !isFromOcr,
           ),
         ),
       );
-      _loadData();
+      if (mounted) _loadData();
     } else if (action.type == AIActionType.delete ||
         action.type == AIActionType.update) {
       final transactions = await transactionRepo.getTransactions(
-        limit: 20,
         accountId: selectedId,
       );
 
-      TransactionModel? target;
-      if (action.category != null && action.category!.isNotEmpty) {
-        final query = action.category!.toLowerCase();
-        target = transactions.firstWhereOrNull(
-          (t) =>
-              t.category.toLowerCase().contains(query) ||
-              t.merchant.toLowerCase().contains(query),
-        );
-      } else {
-        target = transactions.firstOrNull;
-      }
+      final query =
+          (action.merchant?.isNotEmpty == true
+                  ? action.merchant
+                  : action.category)
+              ?.trim()
+              .toLowerCase();
+      final matches = query == null || query.isEmpty
+          ? <TransactionModel>[]
+          : transactions
+                .where(
+                  (t) =>
+                      (t.category.toLowerCase() == query ||
+                          t.merchant.toLowerCase() == query) &&
+                      (action.date == null ||
+                          DateUtils.isSameDay(t.date, action.date)),
+                )
+                .toList();
+      final target = matches.length == 1 ? matches.single : null;
 
       if (target == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Could not find a matching transaction to modify.'),
+              persist: false,
+              content: Text(
+                'Open the transaction you want to change in Transactions.',
+              ),
             ),
           );
         }
@@ -2071,91 +1723,13 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
   }
 
   Future<void> _handleScan() async {
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'SCAN RECEIPT',
-              style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _buildScanOption(
-                  ctx,
-                  Icons.camera_alt_rounded,
-                  'Camera',
-                  ImageSource.camera,
-                ),
-                _buildScanOption(
-                  ctx,
-                  Icons.photo_library_rounded,
-                  'Gallery',
-                  ImageSource.gallery,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const TransactionEntryScreen(initialTab: 1),
       ),
     );
-
-    if (source == null) return;
-
-    setState(() => _isAiThinking = true); // Using existing thinking overlay
-
-    try {
-      final text = await _ocrService.pickAndRecognizeText(source);
-      if (text == null || text.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No text found on receipt.')),
-          );
-        }
-        return;
-      }
-
-      final action = await _aiService.parseIntent(text);
-      if (mounted) {
-        await _executeAIAction(action, isFromOcr: true);
-      }
-    } finally {
-      if (mounted) setState(() => _isAiThinking = false);
-    }
-  }
-
-  Widget _buildScanOption(
-    BuildContext ctx,
-    IconData icon,
-    String label,
-    ImageSource source,
-  ) {
-    return InkWell(
-      onTap: () => Navigator.pop(ctx, source),
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        width: 100,
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Icon(icon, size: 32, color: AppTheme.primary),
-            const SizedBox(height: 8),
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
-          ],
-        ),
-      ),
-    );
+    if (mounted) _loadData();
   }
 
   void _showActionConfirmation(AIAction action, TransactionModel t) {
@@ -2191,14 +1765,18 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                   children: [
                     Icon(
                       isDelete
-                          ? Icons.delete_forever_rounded
+                          ? AppIcons.deleteForever
                           : Icons.edit_note_rounded,
                       color: isDelete ? Colors.red : Colors.blue,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        '${t.merchant.isNotEmpty ? t.merchant : t.category}: ₹${t.amount}\nDate: ${DateFormat('MMM d').format(t.date)}',
+                        '${t.merchant.isNotEmpty
+                            ? t.merchant
+                            : t.note.isNotEmpty
+                            ? t.note
+                            : t.category}: ₹${t.amount}\nDate: ${DateFormat('MMM d').format(t.date)}',
                         style: const TextStyle(fontWeight: FontWeight.w500),
                       ),
                     ),
@@ -2330,6 +1908,7 @@ class _HomeScreenContentState extends State<_HomeScreenContent>
                           Navigator.pop(ctx);
                           messenger.showSnackBar(
                             SnackBar(
+                              persist: false,
                               content: Text(
                                 isDelete
                                     ? 'Transaction deleted.'
@@ -2381,11 +1960,10 @@ class _AccountSearchContentState extends State<_AccountSearchContent> {
         .where((a) => a.bankName.toLowerCase().contains(_query.toLowerCase()))
         .toList();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+    return Material(
+      color: cs.surface,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           const SizedBox(height: 12),
@@ -2404,7 +1982,7 @@ class _AccountSearchContentState extends State<_AccountSearchContent> {
               autofocus: true,
               decoration: InputDecoration(
                 hintText: 'Search for a bank...',
-                prefixIcon: const Icon(Icons.search_rounded),
+                prefixIcon: const Icon(AppIcons.search),
                 filled: true,
                 fillColor: cs.surfaceVariant.withOpacity(0.3),
                 border: OutlineInputBorder(
@@ -2435,9 +2013,7 @@ class _AccountSearchContentState extends State<_AccountSearchContent> {
                         ? cs.primary
                         : cs.surfaceVariant.withOpacity(0.5),
                     child: Icon(
-                      isAll
-                          ? Icons.all_inclusive
-                          : Icons.account_balance_rounded,
+                      isAll ? Icons.all_inclusive : AppIcons.bank,
                       color: isSelected ? cs.onPrimary : cs.onSurfaceVariant,
                       size: 18,
                     ),
@@ -2452,7 +2028,7 @@ class _AccountSearchContentState extends State<_AccountSearchContent> {
                     ),
                   ),
                   trailing: isSelected
-                      ? Icon(Icons.check_circle_rounded, color: cs.primary)
+                      ? Icon(AppIcons.success, color: cs.primary)
                       : null,
                   onTap: () => widget.onSelect(isAll ? null : account!.id),
                 );

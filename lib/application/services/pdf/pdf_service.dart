@@ -1,13 +1,20 @@
-import 'dart:io';
+import '../security/private_file_cleanup.dart';
+import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:path_provider/path_provider.dart';
 import 'package:expencify/domain/entities/transaction.dart';
 import 'package:expencify/domain/entities/account.dart';
 import 'package:intl/intl.dart';
-import 'package:printing/printing.dart';
 
 class PdfService {
+  final PrivateFileCleanup files;
+  const PdfService({this.files = const PrivateFileCleanup()});
+  static final _purple = PdfColor.fromHex('#7C3AED');
+  static final _ink = PdfColor.fromHex('#201A30');
+  static final _muted = PdfColor.fromHex('#625D6D');
+  static final _line = PdfColor.fromHex('#E7E3ED');
+  static final _green = PdfColor.fromHex('#176B46');
+  static final _red = PdfColor.fromHex('#A82349');
   Future<String?> exportTransactionsToPDF(
     List<TransactionModel> transactions, {
     List<Account>? accounts,
@@ -16,281 +23,305 @@ class PdfService {
     DateTime? from,
     DateTime? to,
   }) async {
-    // Build account lookup
-    final accountMap = <int, String>{};
-    if (accounts != null) {
-      for (final a in accounts) {
-        if (a.id != null) accountMap[a.id!] = '${a.name} (${a.bankName})';
-      }
-    }
-
-    final dateFmt = DateFormat('d MMM yyyy');
-
-    // Load fonts supporting the Rupee symbol (₹)
-    final regularFont = await PdfGoogleFonts.notoSansRegular();
-    final boldFont = await PdfGoogleFonts.notoSansBold();
-
-    final doc = pw.Document(
-      theme: pw.ThemeData.withFont(base: regularFont, bold: boldFont),
+    final accountMap = {
+      for (final a in accounts ?? <Account>[])
+        if (a.id != null) a.id!: a,
+    };
+    final date = DateFormat('d MMM yyyy');
+    final money = NumberFormat('#,##,##0.00', 'en_IN');
+    final period = from != null && to != null
+        ? '${date.format(from)} - ${date.format(to)}'
+        : from != null
+        ? 'From ${date.format(from)}'
+        : to != null
+        ? 'Through ${date.format(to)}'
+        : 'All dates';
+    final regular = pw.Font.ttf(
+      await rootBundle.load('assets/fonts/Inter-Regular.ttf'),
     );
-
-    // Colour palette
-    final headerBg = PdfColor.fromHex('#6C63FF');
-    final incomeCol = PdfColor.fromHex('#4CAF50');
-    final expenseCol = PdfColor.fromHex('#F44336');
-    final rowAlt = PdfColor.fromHex('#F5F5F5');
-
-    // Summary stats
-    double totalIncome = 0, totalExpense = 0;
-    for (final t in transactions) {
-      if (t.type == 'income') {
-        totalIncome += t.amount;
+    final bold = pw.Font.ttf(
+      await rootBundle.load('assets/fonts/Inter-SemiBold.ttf'),
+    );
+    final doc = pw.Document(
+      title: 'Spendy transaction report',
+      author: 'Spendy',
+      theme: pw.ThemeData.withFont(base: regular, bold: bold),
+    );
+    var incomePaise = 0, expensePaise = 0;
+    for (final tx in transactions) {
+      if (tx.type == 'income') {
+        incomePaise += (tx.amount * 100).round();
       } else {
-        totalExpense += t.amount;
+        expensePaise += (tx.amount * 100).round();
       }
     }
-
+    final net = incomePaise - expensePaise;
+    final generated = date.format(DateTime.now());
     doc.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        header: (ctx) => pw.Column(
-          children: [
-            pw.Container(
-              decoration: pw.BoxDecoration(
-                color: headerBg,
-                borderRadius: pw.BorderRadius.circular(8),
+        maxPages: 1000,
+        margin: const pw.EdgeInsets.fromLTRB(36, 30, 36, 30),
+        header: (context) => pw.Container(
+          padding: const pw.EdgeInsets.only(bottom: 14),
+          margin: const pw.EdgeInsets.only(bottom: 16),
+          decoration: pw.BoxDecoration(
+            border: pw.Border(bottom: pw.BorderSide(color: _line)),
+          ),
+          child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                'Spendy',
+                style: pw.TextStyle(
+                  fontSize: 20,
+                  fontWeight: pw.FontWeight.bold,
+                  color: _purple,
+                ),
               ),
-              padding: const pw.EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 14,
+              pw.Text(
+                'TRANSACTION REPORT',
+                style: pw.TextStyle(
+                  fontSize: 9,
+                  letterSpacing: 1.3,
+                  color: _muted,
+                ),
               ),
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text(
-                    'Spendy — Transaction Report',
-                    style: pw.TextStyle(
-                      color: PdfColors.white,
-                      fontSize: 16,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.Text(
-                    DateFormat('d MMM yyyy').format(DateTime.now()),
-                    style: const pw.TextStyle(color: PdfColors.white),
-                  ),
-                ],
+            ],
+          ),
+        ),
+        footer: (context) => pw.Container(
+          padding: const pw.EdgeInsets.only(top: 10),
+          decoration: pw.BoxDecoration(
+            border: pw.Border(top: pw.BorderSide(color: _line)),
+          ),
+          child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                'Generated $generated | INR',
+                style: pw.TextStyle(fontSize: 8, color: _muted),
               ),
+              pw.Text(
+                'Page ${context.pageNumber} of ${context.pagesCount}',
+                style: pw.TextStyle(fontSize: 8, color: _muted),
+              ),
+            ],
+          ),
+        ),
+        build: (context) => [
+          pw.Text(
+            'Your transactions',
+            style: pw.TextStyle(
+              fontSize: 24,
+              fontWeight: pw.FontWeight.bold,
+              color: _ink,
             ),
-            if (filterType != null || filterCategory != null || from != null)
-              pw.Padding(
-                padding: const pw.EdgeInsets.only(top: 10, left: 4, right: 4),
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          ),
+          pw.SizedBox(height: 7),
+          pw.Text(period, style: pw.TextStyle(fontSize: 11, color: _muted)),
+          if (filterType != null || filterCategory != null) ...[
+            pw.SizedBox(height: 7),
+            pw.Text(
+              [
+                if (filterType != null)
+                  filterType == 'income' ? 'Income' : 'Expenses',
+                if (filterCategory != null) filterCategory,
+              ].join(' | '),
+              style: pw.TextStyle(fontSize: 10, color: _muted),
+            ),
+          ],
+          pw.SizedBox(height: 20),
+          pw.Row(
+            children: [
+              _summary('Income', '₹${money.format(incomePaise / 100)}', _green),
+              pw.SizedBox(width: 10),
+              _summary(
+                'Expenses',
+                '₹${money.format(expensePaise / 100)}',
+                _red,
+              ),
+              pw.SizedBox(width: 10),
+              _summary(
+                'Net cash flow',
+                '${net < 0 ? '-' : ''}₹${money.format(net.abs() / 100)}',
+                net < 0 ? _red : _green,
+              ),
+            ],
+          ),
+          pw.SizedBox(height: 22),
+          pw.Text(
+            '${transactions.length} ${transactions.length == 1 ? 'transaction' : 'transactions'}',
+            style: pw.TextStyle(
+              fontSize: 11,
+              fontWeight: pw.FontWeight.bold,
+              color: _ink,
+            ),
+          ),
+          pw.SizedBox(height: 10),
+          if (transactions.isEmpty)
+            pw.Padding(
+              padding: const pw.EdgeInsets.symmetric(vertical: 24),
+              child: pw.Text(
+                'No transactions in this report.',
+                style: pw.TextStyle(fontSize: 11, color: _muted),
+              ),
+            )
+          else
+            pw.Table(
+              columnWidths: {
+                0: const pw.FixedColumnWidth(75),
+                1: const pw.FlexColumnWidth(2.2),
+                2: const pw.FlexColumnWidth(1.6),
+                3: const pw.FixedColumnWidth(100),
+              },
+              defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+              children: [
+                pw.TableRow(
+                  repeat: true,
+                  decoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#F1EBFC'),
+                  ),
                   children: [
-                    pw.Row(
-                      children: [
-                        if (filterType != null) ...[
-                          _filterBadge(
-                            'Type: ${filterType.toUpperCase()}',
-                            headerBg,
+                    for (final h in [
+                      'Date',
+                      'Transaction',
+                      'Account',
+                      'Amount (INR)',
+                    ])
+                      _cell(
+                        pw.Text(
+                          h,
+                          textAlign: h == 'Amount (INR)'
+                              ? pw.TextAlign.right
+                              : pw.TextAlign.left,
+                          style: pw.TextStyle(
+                            fontSize: 9,
+                            fontWeight: pw.FontWeight.bold,
+                            color: _ink,
                           ),
-                          pw.SizedBox(width: 8),
-                        ],
-                        if (filterCategory != null)
-                          _filterBadge('Category: $filterCategory', headerBg),
-                      ],
-                    ),
-                    if (from != null && to != null)
-                      pw.Text(
-                        'Period: ${dateFmt.format(from)} - ${dateFmt.format(to)}',
-                        style: const pw.TextStyle(
-                          fontSize: 10,
-                          color: PdfColors.grey700,
                         ),
                       ),
                   ],
                 ),
-              ),
-            pw.SizedBox(height: 10),
-          ],
-        ),
-        build: (ctx) => [
-          pw.SizedBox(height: 16),
-
-          // Summary cards row
-          pw.Row(
-            children: [
-              _summaryCard(
-                'Total Transactions',
-                '${transactions.length}',
-                PdfColor.fromHex('#6C63FF'),
-              ),
-              pw.SizedBox(width: 12),
-              _summaryCard(
-                'Total Income',
-                '₹${NumberFormat('#,##0').format(totalIncome)}',
-                incomeCol,
-              ),
-              pw.SizedBox(width: 12),
-              _summaryCard(
-                'Total Expense',
-                '₹${NumberFormat('#,##0').format(totalExpense)}',
-                expenseCol,
-              ),
-              pw.SizedBox(width: 12),
-              _summaryCard(
-                'Net',
-                '₹${NumberFormat('#,##0').format(totalIncome - totalExpense)}',
-                totalIncome >= totalExpense ? incomeCol : expenseCol,
-              ),
-            ],
-          ),
-
-          pw.SizedBox(height: 20),
-
-          // Table
-          pw.Table(
-            border: pw.TableBorder.symmetric(
-              outside: const pw.BorderSide(color: PdfColors.grey300),
+                for (var i = 0; i < transactions.length; i++)
+                  _row(
+                    transactions[i],
+                    accountMap[transactions[i].accountId],
+                    i,
+                    date,
+                    money,
+                  ),
+              ],
             ),
-            columnWidths: {
-              0: const pw.FlexColumnWidth(1.6),
-              1: const pw.FlexColumnWidth(2.5),
-              2: const pw.FlexColumnWidth(1.2),
-              3: const pw.FlexColumnWidth(1.8),
-              4: const pw.FlexColumnWidth(2.0),
-              5: const pw.FlexColumnWidth(1.4),
-            },
-            children: [
-              // Header row
-              pw.TableRow(
-                decoration: pw.BoxDecoration(color: headerBg),
-                children:
-                    [
-                          'Date',
-                          'Account',
-                          'Type',
-                          'Category',
-                          'Merchant',
-                          'Amount (₹)',
-                        ]
-                        .map(
-                          (h) => pw.Padding(
-                            padding: const pw.EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 8,
-                            ),
-                            child: pw.Text(
-                              h,
-                              style: pw.TextStyle(
-                                color: PdfColors.white,
-                                fontWeight: pw.FontWeight.bold,
-                                fontSize: 10,
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
-              ),
-              // Data rows
-              ...transactions.asMap().entries.map((entry) {
-                final i = entry.key;
-                final tx = entry.value;
-                final isIncome = tx.type == 'income';
-                final bg = i.isEven ? PdfColors.white : rowAlt;
-                final amtCol = isIncome ? incomeCol : expenseCol;
-                return pw.TableRow(
-                  decoration: pw.BoxDecoration(color: bg),
-                  children:
-                      [
-                        dateFmt.format(tx.date),
-                        accountMap[tx.accountId] ?? 'A/c #${tx.accountId}',
-                        isIncome ? 'Income' : 'Expense',
-                        tx.category,
-                        tx.merchant.isNotEmpty ? tx.merchant : '-',
-                        (isIncome ? '+' : '-') + tx.amount.toStringAsFixed(2),
-                      ].asMap().entries.map((e) {
-                        final isAmt = e.key == 5;
-                        return pw.Padding(
-                          padding: const pw.EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 6,
-                          ),
-                          child: pw.Text(
-                            e.value,
-                            style: pw.TextStyle(
-                              fontSize: 9,
-                              color: isAmt ? amtCol : PdfColors.black,
-                              fontWeight: isAmt
-                                  ? pw.FontWeight.bold
-                                  : pw.FontWeight.normal,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                );
-              }),
-            ],
-          ),
         ],
       ),
     );
-
-    final dir = await getApplicationDocumentsDirectory();
-    final path =
-        '${dir.path}/spendy_${DateTime.now().millisecondsSinceEpoch}.pdf';
-    await File(path).writeAsBytes(await doc.save());
-    return path;
+    return (await files.create('pdf', await doc.save())).path;
   }
 
-  pw.Widget _filterBadge(String text, PdfColor color) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+  pw.Widget _summary(String label, String value, PdfColor color) => pw.Expanded(
+    child: pw.Container(
+      padding: const pw.EdgeInsets.all(12),
       decoration: pw.BoxDecoration(
-        color: PdfColors.white,
-        borderRadius: pw.BorderRadius.circular(4),
-        border: pw.Border.all(color: color, width: 0.5),
+        color: PdfColor.fromHex('#FAF8FD'),
+        border: pw.Border.all(color: _line),
+        borderRadius: pw.BorderRadius.circular(8),
       ),
-      child: pw.Text(
-        text,
-        style: pw.TextStyle(
-          fontSize: 8,
-          fontWeight: pw.FontWeight.bold,
-          color: color,
-        ),
-      ),
-    );
-  }
-
-  pw.Widget _summaryCard(String label, String value, PdfColor color) {
-    return pw.Expanded(
-      child: pw.Container(
-        padding: const pw.EdgeInsets.all(12),
-        decoration: pw.BoxDecoration(
-          color: color,
-          borderRadius: pw.BorderRadius.circular(8),
-        ),
-        child: pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text(
-              label,
-              style: const pw.TextStyle(color: PdfColors.white, fontSize: 8),
-            ),
-            pw.SizedBox(height: 4),
-            pw.Text(
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(label, style: pw.TextStyle(fontSize: 9, color: _muted)),
+          pw.SizedBox(height: 8),
+          pw.FittedBox(
+            fit: pw.BoxFit.scaleDown,
+            child: pw.Text(
               value,
               style: pw.TextStyle(
-                color: PdfColors.white,
-                fontSize: 13,
+                fontSize: 16,
                 fontWeight: pw.FontWeight.bold,
+                color: color,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
+    ),
+  );
+  pw.Widget _cell(pw.Widget child) => pw.Padding(
+    padding: const pw.EdgeInsets.symmetric(horizontal: 9, vertical: 11),
+    child: child,
+  );
+  pw.TableRow _row(
+    TransactionModel tx,
+    Account? account,
+    int index,
+    DateFormat date,
+    NumberFormat money,
+  ) {
+    final income = tx.type == 'income';
+    return pw.TableRow(
+      decoration: pw.BoxDecoration(
+        color: index.isEven ? PdfColors.white : PdfColor.fromHex('#FAF9FC'),
+        border: pw.Border(bottom: pw.BorderSide(color: _line, width: .4)),
+      ),
+      children: [
+        _cell(
+          pw.Text(
+            date.format(tx.date),
+            style: pw.TextStyle(fontSize: 9, color: _muted),
+          ),
+        ),
+        _cell(
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                tx.merchant.trim().isEmpty ? tx.category : tx.merchant,
+                style: pw.TextStyle(
+                  fontSize: 10,
+                  color: _ink,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.SizedBox(height: 4),
+              pw.Text(
+                '${tx.category} | ${income ? 'Income' : 'Expense'}',
+                style: pw.TextStyle(fontSize: 9, color: _muted),
+              ),
+            ],
+          ),
+        ),
+        _cell(
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                account?.name ?? 'Unknown account',
+                style: pw.TextStyle(fontSize: 10, color: _ink),
+              ),
+              if (account != null && account.bankName != account.name) ...[
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  account.bankName,
+                  style: pw.TextStyle(fontSize: 9, color: _muted),
+                ),
+              ],
+            ],
+          ),
+        ),
+        _cell(
+          pw.Text(
+            '${income ? '+' : '-'}${money.format(tx.amount)}',
+            textAlign: pw.TextAlign.right,
+            style: pw.TextStyle(
+              fontSize: 10,
+              fontWeight: pw.FontWeight.bold,
+              color: income ? _green : _red,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

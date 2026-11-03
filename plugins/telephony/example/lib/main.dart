@@ -11,8 +11,10 @@ void main() {
 }
 
 class MyApp extends StatefulWidget {
+  const MyApp({super.key});
+
   @override
-  _MyAppState createState() => _MyAppState();
+  State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> {
@@ -48,7 +50,9 @@ class _MyAppState extends State<MyApp> {
 
     if (result != null && result) {
       telephony.listenIncomingSms(
-          onNewMessage: onMessage, onBackgroundMessage: onBackgroundMessage);
+        onNewMessage: onMessage,
+        onBackgroundMessage: onBackgroundMessage,
+      );
     }
 
     if (!mounted) return;
@@ -57,21 +61,21 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-        home: Scaffold(
-      appBar: AppBar(
-        title: const Text('Plugin example app'),
-      ),
-      body: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Center(child: Text("Latest received SMS: $_message")),
-          TextButton(
+      home: Scaffold(
+        appBar: AppBar(title: const Text('Plugin example app')),
+        body: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Center(child: Text("Latest received SMS: $_message")),
+            TextButton(
               onPressed: () async {
                 await telephony.openDialer("123413453");
               },
-              child: Text('Open Dialer'))
-        ],
+              child: Text('Open Dialer'),
+            ),
+          ],
+        ),
       ),
-    ));
+    );
   }
 }

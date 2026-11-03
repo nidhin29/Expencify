@@ -1,3 +1,10 @@
+// LiteRT-LM 0.19.0 publishes Kotlin 2.4 metadata. Use its supported shrinker
+// without changing the Android Gradle plugin or disabling metadata checks.
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath("com.android.tools:r8:9.1.57") }
+}
+
 allprojects {
     repositories {
         google()

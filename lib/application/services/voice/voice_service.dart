@@ -2,9 +2,12 @@ import 'dart:developer';
 
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'voice_capture.dart';
 
-class VoiceService {
+class VoiceService implements VoiceCapture {
   final SpeechToText _speechToText = SpeechToText();
+  int _session = 0;
+  Future<void>? _pendingCancel;
 
   Future<bool> initSpeech() async {
     try {
@@ -25,24 +28,59 @@ class VoiceService {
     }
   }
 
-  Future<bool> startListening(Function(String) onResult) async {
+  @override
+  Future<bool> startListening(
+    void Function(String) onResult, {
+    void Function(String)? onPartial,
+    void Function(String)? onError,
+    void Function()? onStopped,
+  }) async {
+    final session = ++_session;
     try {
+      await _pendingCancel;
+      if (session != _session) return false;
       if (!_speechToText.isAvailable) {
         bool ok = await initSpeech();
         if (!ok) return false;
       }
+      if (session != _session) return false;
+      // SpeechToText is a singleton. Rebind listeners for each capture even
+      // after it has already been initialized by an earlier Home instance.
+      _speechToText.errorListener = (error) {
+        if (session != _session) return;
+        final message = switch (error.errorMsg) {
+          'error_no_match' || 'error_speech_timeout' =>
+            'No speech detected. Try again or enter the expense manually.',
+          'error_permission' || 'error_insufficient_permissions' =>
+            'Microphone access is off. Enable it in device settings and try again.',
+          'error_network' || 'error_network_timeout' =>
+            'Speech recognition is unavailable. Try again or enter the expense manually.',
+          _ => 'Listening stopped unexpectedly. Please try again.',
+        };
+        onError?.call(message);
+      };
+      _speechToText.statusListener = (status) {
+        if (session == _session &&
+            (status == 'done' || status == 'notListening')) {
+          onStopped?.call();
+        }
+      };
       await _speechToText.listen(
         onResult: (result) {
+          if (session != _session) return;
           if (result.finalResult) {
             onResult(result.recognizedWords);
+          } else {
+            onPartial?.call(result.recognizedWords);
           }
         },
-        listenFor: const Duration(
-          minutes: 5,
-        ), // Allow up to 5 minutes of continuous recording
-        pauseFor: const Duration(
-          seconds: 15,
-        ), // Wait 15 seconds of absolute silence before auto-stopping
+        listenFor: const Duration(minutes: 1),
+        pauseFor: const Duration(seconds: 5),
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+        ),
       );
       return true;
     } catch (e) {
@@ -51,12 +89,29 @@ class VoiceService {
     }
   }
 
+  @override
   Future<void> stopListening() async {
     try {
       await _speechToText.stop();
     } catch (e) {
       log('Speech Stop Error: $e');
     }
+  }
+
+  @override
+  Future<void> cancelListening() {
+    ++_session;
+    final previous = _pendingCancel;
+    final cancellation = () async {
+      await previous;
+      try {
+        await _speechToText.cancel();
+      } catch (e) {
+        log('Speech Cancel Error: ${e.runtimeType}');
+      }
+    }();
+    _pendingCancel = cancellation;
+    return cancellation;
   }
 
   // Simple parser to find keywords like "spent", "income", "amount"

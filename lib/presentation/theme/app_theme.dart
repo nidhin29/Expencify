@@ -1,3 +1,4 @@
+import 'app_icons.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -8,8 +9,8 @@ class AppTheme {
   static const Color accent = Color(0xFF06B6D4); // Cyan accent
 
   // Semantic
-  static const Color income = Color(0xFF22C55E);
-  static const Color expense = Color(0xFFF43F5E);
+  static const Color income = Color(0xFF15803D);
+  static const Color expense = Color(0xFFBE123C);
 
   // ── Legacy aliases (so existing code compiles unchanged) ─────────────────
   static const Color primaryColor = primary;
@@ -27,7 +28,7 @@ class AppTheme {
   static const Color darkBorder = Color(0xFF3F3F46); // Zinc-700
   static const Color darkTextPrimary = Color(0xFFFAFAFA);
   static const Color darkTextSecondary = Color(0xFFA1A1AA); // Zinc-400
-  static const Color darkTextMuted = Color(0xFF71717A); // Zinc-500
+  static const Color darkTextMuted = Color(0xFF94949E); // Zinc-500
 
   // Light palette
   static const Color lightBg = Color(0xFFF4F4F5); // Zinc-100
@@ -35,19 +36,22 @@ class AppTheme {
   static const Color lightElevated = Color(0xFFE4E4E7); // Zinc-200
   static const Color lightBorder = Color(0xFFD4D4D8); // Zinc-300
   static const Color lightTextPrimary = Color(0xFF09090B);
-  static const Color lightTextSecondary = Color(0xFF71717A);
-  static const Color lightTextMuted = Color(0xFFA1A1AA);
+  static const Color lightTextSecondary = Color(0xFF52525B);
+  static const Color lightTextMuted = Color(0xFF62626B);
 
   static ThemeData get darkTheme => _build(Brightness.dark);
   static ThemeData get lightTheme => _build(Brightness.light);
 
   static ThemeData _build(Brightness brightness) {
+    // Inter weights are bundled with the app; typography never needs a network request.
+    GoogleFonts.config.allowRuntimeFetching = false;
     final dark = brightness == Brightness.dark;
     final bg = dark ? darkBg : lightBg;
     final surface = dark ? darkSurface : lightSurface;
     final border = dark ? darkBorder : lightBorder;
     final textPrimary = dark ? darkTextPrimary : lightTextPrimary;
     final textSecondary = dark ? darkTextSecondary : lightTextSecondary;
+    final actionText = dark ? const Color(0xFFC4B5FD) : primary;
 
     // Inter — tight, legible, designed for data UIs
     final baseText = GoogleFonts.interTextTheme(
@@ -145,6 +149,33 @@ class AppTheme {
         ),
       ),
 
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: dark
+            ? const Color(0xFFE4E4E7)
+            : const Color(0xFF27272A),
+        contentTextStyle: baseText.bodyMedium?.copyWith(
+          color: dark ? const Color(0xFF18181B) : Colors.white,
+        ),
+        actionTextColor: dark
+            ? const Color(0xFF6D28D9)
+            : const Color(0xFFD8B4FE),
+        showCloseIcon: true,
+        closeIconColor: dark ? const Color(0xFF18181B) : Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        titleTextStyle: baseText.titleLarge?.copyWith(
+          color: textPrimary,
+          fontWeight: FontWeight.w700,
+        ),
+        contentTextStyle: baseText.bodyMedium?.copyWith(color: textSecondary),
+      ),
+
       // Cards — sharp, minimal
       cardTheme: CardThemeData(
         color: surface,
@@ -156,7 +187,65 @@ class AppTheme {
         ),
       ),
 
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: actionText,
+          side: BorderSide(color: border),
+          minimumSize: const Size(48, 48),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      ),
+
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: const Size(48, 48),
+          iconSize: AppIcons.actionSize,
+          foregroundColor: actionText,
+        ),
+      ),
+
+      popupMenuTheme: PopupMenuThemeData(
+        color: surface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 6,
+        shadowColor: Colors.black.withValues(alpha: .12),
+        position: PopupMenuPosition.under,
+        menuPadding: const EdgeInsets.all(6),
+        iconColor: textSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: border.withValues(alpha: .65)),
+        ),
+        textStyle: baseText.bodyMedium?.copyWith(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: textPrimary,
+        ),
+      ),
+
       // Bottom nav
+      navigationBarTheme: NavigationBarThemeData(
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? primary
+                : textSecondary,
+          ),
+        ),
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: states.contains(WidgetState.selected)
+                ? FontWeight.w600
+                : FontWeight.w500,
+            color: states.contains(WidgetState.selected)
+                ? primary
+                : textSecondary,
+          ),
+        ),
+      ),
       bottomAppBarTheme: BottomAppBarThemeData(
         color: surface,
         elevation: 0,
@@ -177,7 +266,10 @@ class AppTheme {
           color: textPrimary,
           letterSpacing: -0.3,
         ),
-        iconTheme: IconThemeData(color: textSecondary, size: 22),
+        iconTheme: IconThemeData(
+          color: textSecondary,
+          size: AppIcons.actionSize,
+        ),
       ),
 
       // Dividers
@@ -188,6 +280,7 @@ class AppTheme {
         backgroundColor: dark ? darkElevated : lightElevated,
         labelStyle: GoogleFonts.inter(
           fontSize: 10,
+          color: textPrimary,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.5,
         ),
@@ -199,7 +292,8 @@ class AppTheme {
       // Input fields — compact
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: dark ? darkElevated : lightElevated,
+        fillColor: dark ? darkElevated : const Color(0xFFF9F9FC),
+        floatingLabelBehavior: FloatingLabelBehavior.always,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 14,
           vertical: 13,
@@ -217,7 +311,7 @@ class AppTheme {
           borderSide: const BorderSide(color: primary, width: 1.5),
         ),
         hintStyle: GoogleFonts.inter(fontSize: 14, color: textSecondary),
-        labelStyle: GoogleFonts.inter(fontSize: 12, color: textSecondary),
+        labelStyle: GoogleFonts.inter(fontSize: 13, color: textSecondary),
       ),
 
       // Elevated button
@@ -240,7 +334,8 @@ class AppTheme {
       // Text button
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: primary,
+          foregroundColor: actionText,
+          minimumSize: const Size(48, 48),
           textStyle: GoogleFonts.inter(
             fontSize: 14,
             fontWeight: FontWeight.w500,
@@ -269,19 +364,52 @@ class AppTheme {
       ),
       datePickerTheme: DatePickerThemeData(
         backgroundColor: surface,
-        headerBackgroundColor: surface,
+        headerBackgroundColor: primary.withValues(alpha: .07),
         headerForegroundColor: textPrimary,
         headerHeadlineStyle: GoogleFonts.inter(
           fontSize: 20,
           fontWeight: FontWeight.w600,
         ),
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        dayStyle: GoogleFonts.inter(fontSize: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        dayStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w500),
+        weekdayStyle: GoogleFonts.inter(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: textSecondary,
+        ),
+        dayShape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        dayBackgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected) ? primary : null,
+        ),
+        dayForegroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.white
+              : states.contains(WidgetState.disabled)
+              ? textSecondary.withValues(alpha: .4)
+              : textPrimary,
+        ),
+        todayForegroundColor: WidgetStateProperty.resolveWith(
+          (states) =>
+              states.contains(WidgetState.selected) ? Colors.white : actionText,
+        ),
+        todayBorder: BorderSide(color: actionText),
+        rangePickerBackgroundColor: surface,
+        rangePickerHeaderBackgroundColor: primary.withValues(alpha: .07),
+        rangePickerHeaderForegroundColor: textPrimary,
+        rangePickerHeaderHeadlineStyle: GoogleFonts.inter(
+          fontSize: 24,
+          fontWeight: FontWeight.w600,
+        ),
+        rangeSelectionBackgroundColor: primary.withValues(
+          alpha: dark ? .25 : .12,
+        ),
         yearStyle: GoogleFonts.inter(fontSize: 14),
         cancelButtonStyle: TextButton.styleFrom(foregroundColor: textSecondary),
         confirmButtonStyle: TextButton.styleFrom(
-          foregroundColor: primary,
+          foregroundColor: actionText,
           textStyle: const TextStyle(fontWeight: FontWeight.w600),
         ),
       ),
@@ -357,10 +485,12 @@ class StatTile extends StatelessWidget {
           children: [
             Icon(icon, size: 11, color: valueColor),
             const SizedBox(width: 4),
-            Text(
-              label,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+            Flexible(
+              child: Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ),
           ],

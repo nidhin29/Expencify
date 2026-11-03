@@ -1,11 +1,12 @@
-import 'dart:io';
+import '../security/private_file_cleanup.dart';
+import 'dart:convert';
 import 'package:csv/csv.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:expencify/domain/entities/transaction.dart';
 import 'package:expencify/domain/entities/account.dart';
-import 'package:intl/intl.dart';
 
 class CSVService {
+  final PrivateFileCleanup files;
+  const CSVService({this.files = const PrivateFileCleanup()});
   Future<String?> exportTransactionsToCSV(
     List<TransactionModel> transactions, {
     List<Account>? accounts,
@@ -22,45 +23,20 @@ class CSVService {
       }
     }
 
-    final dateFmt = DateFormat('d MMM yyyy HH:mm');
-    final rowDateFmt = DateFormat('d MMM yyyy');
-    List<List<dynamic>> rows = [];
-
-    // Metadata
-    rows.add(['Spendy - Transaction Export']);
-    rows.add(['Generated On:', dateFmt.format(DateTime.now())]);
-
-    if (from != null && to != null) {
-      rows.add([
-        'Period:',
-        '${rowDateFmt.format(from)} to ${rowDateFmt.format(to)}',
-      ]);
-    }
-
-    if (filterType != null || filterCategory != null) {
-      String filterStr = '';
-      if (filterType != null) {
-        filterStr += 'Type: ${filterType.toUpperCase()}; ';
-      }
-      if (filterCategory != null) {
-        filterStr += 'Category: $filterCategory';
-      }
-      rows.add(['Filters Applied:', filterStr]);
-    }
-
-    rows.add([]); // Empty row separator
-
-    // Table Header
-    rows.add([
-      'Date',
-      'Account',
-      'Type',
-      'Category',
-      'Merchant',
-      'Amount (₹)',
-      'Note',
-      'Method',
-    ]);
+    // One rectangular table, ready for sorting and spreadsheet imports.
+    final rows = <List<String>>[
+      [
+        'Date and time',
+        'Account',
+        'Type',
+        'Category',
+        'Merchant',
+        'Amount',
+        'Currency',
+        'Note',
+        'Method',
+      ],
+    ];
 
     for (final tx in transactions) {
       String method = 'Manual';
@@ -69,22 +45,33 @@ class CSVService {
       if (tx.isSms) method = 'SMS';
 
       rows.add([
-        dateFmt.format(tx.date),
-        accountMap[tx.accountId] ?? 'Account #${tx.accountId}',
+        tx.date.toIso8601String(),
+        _spreadsheetText(accountMap[tx.accountId] ?? 'Unknown account'),
         tx.type == 'income' ? 'Income' : 'Expense',
-        tx.category,
-        tx.merchant,
+        _spreadsheetText(tx.category),
+        _spreadsheetText(tx.merchant),
         tx.amount.toStringAsFixed(2),
-        tx.note,
+        'INR',
+        _spreadsheetText(tx.note),
         method,
       ]);
     }
 
     final csv = const ListToCsvConverter().convert(rows);
-    final directory = await getApplicationDocumentsDirectory();
-    final path =
-        '${directory.path}/spendy_${DateTime.now().millisecondsSinceEpoch}.csv';
-    await File(path).writeAsString(csv);
-    return path;
+    return (await files.create(
+      'csv',
+      // BOM keeps rupee symbols and non-ASCII merchant names readable in Excel.
+      utf8.encode('\uFEFF$csv'),
+    )).path;
+  }
+
+  String _spreadsheetText(String value) {
+    // Quoting CSV fields alone does not prevent spreadsheet formula execution.
+    return RegExp(r'^[\s\uFEFF]*[=+@-]').hasMatch(value) ||
+            value.startsWith('\t') ||
+            value.startsWith('\r') ||
+            value.startsWith('\n')
+        ? "'$value"
+        : value;
   }
 }

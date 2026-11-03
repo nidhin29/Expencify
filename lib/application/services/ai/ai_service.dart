@@ -1,17 +1,38 @@
+import 'ai_conversation.dart';
+import 'voice_intent_contract.dart';
+import 'voice_allocations.dart';
+import 'chat_debug.dart';
+import 'chat_followup_context.dart';
+import 'chat_help_catalog.dart';
+import 'chat_resolved_read.dart';
+import 'chat_identity.dart';
+import 'chat_scope_delta.dart';
+import 'chat_scope.dart';
+import 'chat_interpreter.dart';
+import 'chat_record_executor.dart';
+import 'chat_conversation_pipeline.dart';
+import 'chat_batch_planner.dart';
+import 'chat_evidence.dart';
+import '../chat/chat_query_context_store.dart';
+import 'chat_plan_constraints.dart';
+import 'chat_query_engine.dart';
+import 'dart:async';
+import 'chat_facts.dart';
+import 'model_runtime.dart';
+import 'platform_model_backend.dart';
+import 'chat_policy.dart';
+import 'ai_guardrails.dart';
+import '../performance/performance_probe.dart';
+import 'model_download.dart';
+import 'model_file_hash.dart';
+import 'qwen_task_template.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:flutter_gemma/flutter_gemma.dart' hide CancelToken;
 import 'package:path_provider/path_provider.dart';
-import 'package:expencify/infrastructure/database/database_helper.dart';
-import 'package:intl/intl.dart';
 import 'local_ai_model.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:expencify/infrastructure/repositories/sqlite_account_repository.dart';
-import 'package:expencify/infrastructure/repositories/sqlite_transaction_repository.dart';
-import 'package:expencify/infrastructure/repositories/sqlite_goal_repository.dart';
-import 'package:expencify/infrastructure/repositories/sqlite_reminder_repository.dart';
 
 enum AIActionType { add, update, delete, chat }
 
@@ -36,27 +57,13 @@ class AIAction {
     this.items,
   });
 
-  factory AIAction.fromJson(Map<String, dynamic> json, String original) {
-    // 💎 Fallback: If model hallucinates metadata into the 'items' list,
-    // promote missing keys upwards to the parent object.
+  factory AIAction.fromJson(
+    Map<String, dynamic> json,
+    String original, {
+    String? validationSource,
+  }) {
+    AiGuardrails.validateIntent(json, validationSource ?? original);
     final itemsList = json['items'] as List?;
-    if (itemsList != null) {
-      for (var i in itemsList) {
-        if (i is Map<String, dynamic>) {
-          if (json['date'] == null && i['date'] != null) {
-            json['date'] = i['date'];
-          }
-          if (json['merchant'] == null && i['merchant'] != null) {
-            json['merchant'] = i['merchant'];
-          }
-          if ((json['amount'] ?? json['value']) == null &&
-              i['amount'] != null) {
-            json['amount'] = i['amount'];
-          }
-        }
-      }
-    }
-
     final typeStr = json['action']?.toString().toUpperCase();
     AIActionType type = AIActionType.chat;
     if (typeStr == 'ADD') type = AIActionType.add;
@@ -71,10 +78,12 @@ class AIAction {
     final categoryValue = (json['category'] ?? json['target'])?.toString();
     final merchantValue = json['merchant']?.toString();
 
-    // Parse date if present
-    DateTime? parsedDate;
+    DateTime? parsedDate = AiGuardrails.sourceDate(original);
     if (json['date'] != null) {
-      parsedDate = DateTime.tryParse(json['date'].toString());
+      final proposed = AiGuardrails.strictDate(json['date'] as String);
+      if (parsedDate == null || proposed != parsedDate) {
+        throw const FormatException('Date not grounded in source');
+      }
     }
 
     // Parse items if present (for OCR itemization)
@@ -99,14 +108,21 @@ class AISplitItem {
   final double amount;
   final String category;
   final String? merchant;
+  final String? label;
 
-  AISplitItem({required this.amount, required this.category, this.merchant});
+  AISplitItem({
+    required this.amount,
+    required this.category,
+    this.merchant,
+    this.label,
+  });
 
   factory AISplitItem.fromJson(Map<String, dynamic> json) {
     return AISplitItem(
       amount: double.tryParse(json['amount']?.toString() ?? '0') ?? 0.0,
       category: json['category']?.toString() ?? 'Other',
       merchant: json['merchant']?.toString(),
+      label: json['label']?.toString(),
     );
   }
 }
@@ -115,16 +131,58 @@ class AIService {
   static const _channel = MethodChannel('com.example.expencify/asset_delivery');
   static final AIService _instance = AIService._internal();
   factory AIService() => _instance;
-  AIService._internal();
+  AIService._internal()
+    : _runtime = ModelRuntime(PlatformModelBackend()),
+      _facts = ChatFacts(),
+      _observeEvidence = null,
+      _observeDraft = null,
+      _observeTrace = null,
+      _observePlan = null,
+      _interpreter = null;
+  AIService.withDependencies({
+    required ModelRuntime runtime,
+    required ChatFacts facts,
+    ChatInterpreter? interpreter,
+    void Function(ChatEvidence)? observeEvidence,
+    void Function(String)? observeDraft,
+    void Function(Map<String, Object?>)? observeTrace,
+    void Function(Map<String, dynamic>)? observePlan,
+  }) : _runtime = runtime,
+       _facts = facts,
+       _observeEvidence = observeEvidence,
+       _observeDraft = observeDraft,
+       _observeTrace = observeTrace,
+       _observePlan = observePlan,
+       _interpreter = interpreter;
+  final ChatInterpreter? _interpreter;
+  final ModelRuntime _runtime;
+  final ChatFacts _facts;
+  final void Function(ChatEvidence)? _observeEvidence;
+  final void Function(String)? _observeDraft;
+  final void Function(Map<String, Object?>)? _observeTrace;
+  final void Function(Map<String, dynamic>)? _observePlan;
 
   bool _initialized = false;
-  bool get isInitialized => _initialized;
+  bool get isInitialized => _initialized && _runtime.ready;
 
   LocalAIModelMetadata? _currentModel;
   LocalAIModelMetadata? get currentModel => _currentModel;
 
-  InferenceModelSession? _activeSession;
-  InferenceModel? _activeModel;
+  Future<bool> supportsCurrentModel() async {
+    if (!LocalAIModelMetadata.isSupported) return false;
+    if (LocalAIModelMetadata.all.first.runtime == LocalModelRuntime.mediaPipe) {
+      return true;
+    }
+    try {
+      final capabilities = await const MethodChannel(
+        'com.nidhi.expencify/litert_lm',
+      ).invokeMapMethod<String, dynamic>('capabilities');
+      return capabilities?['supported'] == true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   bool _isAiBusy = false;
   Future<void>? _initFuture;
   CancelToken? _downloadCancelToken;
@@ -137,7 +195,10 @@ class AIService {
   Future<void> init([LocalAIModelType? type]) async {
     if (_initFuture != null) return _initFuture;
 
-    _initFuture = _initInternal(type);
+    _initFuture = PerformanceProbe.measure(
+      'ai.initialize',
+      () => _initInternal(type),
+    );
     try {
       await _initFuture;
     } finally {
@@ -146,20 +207,21 @@ class AIService {
   }
 
   Future<void> _initInternal([LocalAIModelType? type]) async {
+    if (!LocalAIModelMetadata.isSupported) {
+      throw UnsupportedError('Local AI is available on Android and iOS.');
+    }
     // If already initialized with the same model, skip
-    if (_initialized && (_currentModel?.id == type || type == null)) return;
-
-    // Manual registration workaround for Desktop platforms
-    /* if (!kIsWeb &&
-        (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
-      FlutterGemmaDesktop.registerWith();
-    } */
-
-    await FlutterGemma.initialize();
+    if (isInitialized && (_currentModel?.id == type || type == null)) return;
+    if (_runtime.busy || _isAiBusy) {
+      throw StateError(
+        'AI is still finishing its previous request. Try again shortly, or restart the app if it remains busy.',
+      );
+    }
+    _initialized = false;
 
     // Use default if nothing specified and no current model
-    // Qwen 2.5 0.5B is now the default as requested
-    final targetType = type ?? _currentModel?.id ?? LocalAIModelType.qwenLite;
+    final targetType =
+        type ?? _currentModel?.id ?? LocalAIModelMetadata.all.first.id;
     final metadata = LocalAIModelMetadata.all.firstWhere(
       (m) => m.id == targetType,
     );
@@ -183,8 +245,6 @@ class AIService {
       } catch (e) {
         debugPrint('AI: Play Asset Delivery MethodChannel failed: $e');
       }
-
-
     }
 
     // 2. Fallback to Documents Directory (Manual download)
@@ -192,25 +252,7 @@ class AIService {
       final directory = await getApplicationDocumentsDirectory();
       final localPath = '${directory.path}/${metadata.fileName}';
 
-      // CLEANUP: Detect and delete invalid/legacy model files to prevent crashes
-      final wrongExtensions = ['.tflite', '.litertlm', '.bin'];
-      for (var ext in wrongExtensions) {
-        if (metadata.fileName.endsWith(ext)) continue;
-
-        final invalidPath = localPath.replaceAll(
-          metadata.fileName.substring(metadata.fileName.lastIndexOf('.')),
-          ext,
-        );
-        if (await File(invalidPath).exists()) {
-          debugPrint('AI: Deleting invalid legacy model file: $invalidPath');
-          try {
-            await File(invalidPath).delete();
-          } catch (e) {
-            debugPrint('AI Cleanup Error: $e');
-          }
-        }
-      }
-
+      // Select the exact pinned artifact. Other downloads are not ours to delete.
       if (await File(localPath).exists()) {
         foundModelPath = localPath;
         debugPrint('AI: Found model in Documents Directory: $localPath');
@@ -222,40 +264,25 @@ class AIService {
       final bytes = await file.length();
       debugPrint('AI: Loading model from: $foundModelPath ($bytes bytes)');
 
-      if (bytes < metadata.minSize) {
+      if (!await _validModel(file, metadata)) {
         debugPrint(
-          'AI Error: Model file is too small ($bytes bytes). Expected at least ${metadata.minSize} bytes. Deleting corrupt file.',
+          'AI: Model failed size/checksum verification. Rejecting the invalid file.',
         );
-        try {
-          await file.delete();
-          debugPrint('AI: Deleted corrupt model file: $foundModelPath');
-        } catch (_) {}
+        // Reject without destroying a user's file. Verified import/download
+        // replaces the artifact only after its replacement has passed checks.
         _initialized = false;
         return;
       }
 
       try {
-        await FlutterGemma.installModel(
-          modelType: metadata.flutterGemmaModelType,
-          fileType: metadata.fileType,
-        ).fromFile(foundModelPath).install();
-
+        await _runtime.initialize(foundModelPath, metadata);
         _currentModel = metadata;
         _initialized = true;
-        debugPrint('AI: Model installation successful.');
-      } catch (e) {
-        debugPrint('AI Initialization Error: $e');
+      } catch (_) {
         _initialized = false;
-        // Automatic recovery: Deleting corrupt model file so it restores fresh download state
-        try {
-          final file = File(foundModelPath);
-          if (await file.exists()) {
-            await file.delete();
-            debugPrint('AI: Deleted corrupt model file: $foundModelPath');
-          }
-
-
-        } catch (_) {}
+        // A verified file is not corrupt merely because the runtime failed.
+        // Preserve it for a retry; only checksum/size validation rejects files.
+        rethrow;
       }
     } else {
       _initialized = false;
@@ -265,6 +292,7 @@ class AIService {
   }
 
   Future<bool> modelExists(LocalAIModelType type) async {
+    if (!LocalAIModelMetadata.isSupported) return false;
     final metadata = LocalAIModelMetadata.all.firstWhere((m) => m.id == type);
 
     // 1. Check Play Asset Delivery (Android)
@@ -279,7 +307,8 @@ class AIService {
           final file = File(fullPath);
           if (await file.exists()) {
             final size = await file.length();
-            if (size >= metadata.minSize) {
+            if (size == metadata.expectedSize &&
+                await _validModel(file, metadata)) {
               return true;
             }
           }
@@ -295,8 +324,11 @@ class AIService {
     final file = File(localPath);
     if (await file.exists()) {
       final size = await file.length();
-      final isValid = size >= metadata.minSize;
-      debugPrint('AI: Checked local path: $localPath | size: $size | valid: $isValid');
+      final isValid =
+          size == metadata.expectedSize && await _validModel(file, metadata);
+      debugPrint(
+        'AI: Checked local path: $localPath | size: $size | valid: $isValid',
+      );
       return isValid;
     }
     return false;
@@ -306,79 +338,135 @@ class AIService {
     LocalAIModelMetadata metadata,
     Function(double) onProgress,
   ) async {
-    final directory = await getApplicationDocumentsDirectory();
-    final modelPath = '${directory.path}/${metadata.fileName}';
-    final tempPath = '$modelPath.tmp';
-    final tempFile = File(tempPath);
-
-    int existingBytes = 0;
-    if (await tempFile.exists()) {
-      existingBytes = await tempFile.length();
+    if (!LocalAIModelMetadata.isSupported) {
+      throw UnsupportedError('Local AI is available on Android and iOS.');
     }
-
-    _downloadCancelToken = CancelToken();
-
+    if (_downloadCancelToken != null) {
+      throw StateError('A model download is already running.');
+    }
+    final directory = await getApplicationDocumentsDirectory();
+    final destination = File('${directory.path}/${metadata.fileName}');
+    final token = CancelToken();
+    _downloadCancelToken = token;
     try {
-      final response = await Dio().get<ResponseBody>(
-        metadata.url,
-        options: Options(
-          responseType: ResponseType.stream,
-          headers: existingBytes > 0 ? {'range': 'bytes=$existingBytes-'} : null,
-          followRedirects: true,
-          validateStatus: (status) => status != null && status < 400,
-        ),
-        cancelToken: _downloadCancelToken,
+      await downloadVerifiedModel(
+        metadata: metadata,
+        partial: File('${destination.path}.tmp'),
+        destination: destination,
+        onProgress: onProgress,
+        cancelToken: token,
       );
-
-      // Total size of the model. 
-      // If we are resuming, Content-Length is the REMAINING size.
-      // We use the metadata size for a stable progress denominator.
-      
-      final file = await tempFile.open(mode: FileMode.append);
-      int downloaded = 0;
-
-      await for (final chunk in response.data!.stream) {
-        await file.writeFrom(chunk);
-        downloaded += chunk.length;
-        
-        // Progress based on total expected size from metadata
-        double progress = (existingBytes + downloaded) / metadata.minSize;
-        if (progress > 1.0) progress = 1.0;
-        onProgress(progress);
-      }
-
-      await file.close();
-
-      // Verification: Check if file size is sufficient
-      final finalSize = await tempFile.length();
-      if (finalSize >= metadata.minSize) {
-        await tempFile.rename(modelPath);
-        debugPrint('AI: Model download and rename complete. Final size: $finalSize');
-      } else {
-        debugPrint('AI: Download ended but file too small ($finalSize).');
-        // Don't delete, let user resume next time
-      }
-    } catch (e) {
-      if (e is DioException && CancelToken.isCancel(e)) {
-        debugPrint('AI: Download paused by user.');
-      } else {
-        debugPrint('AI Download Error: $e');
-        rethrow;
-      }
+    } on DioException catch (e) {
+      if (!CancelToken.isCancel(e)) rethrow;
+      return;
     } finally {
       _downloadCancelToken = null;
     }
-
-    if (await modelExists(metadata.id)) {
-      await init(metadata.id);
-    }
+    await init(metadata.id);
   }
 
-  Future<void> clearSession() async {
-    await _activeSession?.close();
-    _activeSession = null;
-    _activeModel = null;
-    debugPrint('AI: Session cleared.');
+  final Map<String, String> _verifiedFiles = {};
+  Future<void> importModelFile(String path) async {
+    if (!LocalAIModelMetadata.isSupported) {
+      throw UnsupportedError('Local AI is available on Android and iOS.');
+    }
+    if (_downloadCancelToken != null || _runtime.busy || _isAiBusy) {
+      throw StateError('AI is busy. Try again shortly.');
+    }
+    final metadata = LocalAIModelMetadata.all.single;
+    final directory = await getApplicationDocumentsDirectory();
+    final destination = File('${directory.path}/${metadata.fileName}');
+    await importVerifiedModel(
+      source: File(path),
+      destination: destination,
+      metadata: metadata,
+    );
+    _verifiedFiles.remove(destination.path);
+    await init(metadata.id);
+  }
+
+  Future<bool> _validModel(File file, LocalAIModelMetadata metadata) async {
+    final stat = await file.stat();
+    if (stat.size != metadata.expectedSize) return false;
+    final signature =
+        '${metadata.sha256Hash}:${stat.modified.microsecondsSinceEpoch}:${stat.size}';
+    if (_verifiedFiles[file.path] == signature) return true;
+    final digest = await ModelFileHash.sha256File(file.path);
+    if (!QwenTaskTemplate.accepts(metadata.sha256Hash, digest)) return false;
+    QwenTaskTemplate.rememberVerified(
+      file.path,
+      stat,
+      metadata.sha256Hash,
+      digest,
+    );
+    _verifiedFiles[file.path] = signature;
+    return true;
+  }
+
+  static const conversationalSetupReply =
+      'This question needs offline AI to interpret it. Set up offline AI, then try again. Basic spending totals still work without it.';
+
+  Future<String?> _resolvedAnswer(
+    String query,
+    List<Map<String, dynamic>> history,
+    int? accountId,
+    ChatDebug debug,
+  ) async {
+    final temporalEdit = ChatScopeDelta.periodOnly(query);
+    if (!temporalEdit &&
+        !(ChatPlanConstraints.recordRequest(query) &&
+            ChatPlanConstraints.type(query) != null &&
+            {
+              'sum',
+              'avg',
+              'count',
+            }.contains(ChatPlanConstraints.metric(query)))) {
+      return null;
+    }
+    final store = ChatQueryContextStore(_facts.helper);
+    final stamp = history.where((m) => m['chat_generation'] is int).lastOrNull;
+    final generation =
+        stamp?['chat_generation'] as int? ?? await store.generation();
+    final context = await store.load(history, accountId, generation);
+    final intent = await ChatResolvedRead.intent(_facts.helper, query, context);
+    if (intent == null) return null;
+    Map<String, dynamic>? resolved;
+    ChatEvidence? evidence;
+    try {
+      final answer =
+          await ChatQueryEngine(
+            helper: _facts.helper,
+            clock: _facts.clock,
+          ).answerModel(
+            jsonEncode({'intent': intent}),
+            query,
+            accountId: accountId,
+            history: history
+                .where((m) => m['isUser'] == true && m['pending'] != true)
+                .toList(),
+            previousPlan: context,
+            onResolved: (p) {
+              resolved = p;
+              _observePlan?.call(p);
+            },
+            onEvidence: (e) {
+              evidence = e;
+              _observeEvidence?.call(e);
+            },
+          );
+      if (resolved != null) {
+        try {
+          await store.save(query, resolved!, accountId, generation);
+        } catch (_) {
+          /* Answer remains verified. */
+        }
+      }
+      debug.log('answer_source', {'source': 'verified_read', 'modelCalls': 0});
+      return evidence?.fallback ?? answer;
+    } on FormatException {
+      // Incomplete interpretation can still use the normal bounded model path.
+      return null;
+    }
   }
 
   Future<String> ask(
@@ -386,489 +474,313 @@ class AIService {
     int? accountId,
     List<Map<String, dynamic>>? history,
   }) async {
-    if (!_initialized || _currentModel == null) return 'AI not initialized.';
-
-    try {
-      // Fresh session per query: prevents KV-cache overflow in tiny 1024-token windows.
-      // Re-using sessions causes system-prompt + history to consume ALL available tokens,
-      // leaving no room for the AI to actually generate a response.
-      await clearSession();
-
-      final isCpuModel = _currentModel!.fileName.contains('cpu');
-      if (isCpuModel && Platform.isAndroid) {
-        _activeModel = await FlutterGemma.getActiveModel(
-          maxTokens: 1024,
-          preferredBackend: PreferredBackend.cpu,
-        );
-      } else {
-        _activeModel = await FlutterGemma.getActiveModel(maxTokens: 1024);
-      }
-      _activeSession = await _activeModel!.createSession(
-        temperature: 0.4,
-        topK: 40,
-      );
-
-      // Compact financial snapshot
-      final context = await _buildRAGContext(query, accountId: accountId);
-
-      // Include only the very last AI response as a chat hint (saves tokens vs full history)
-      String chatHint = '';
-      if (history != null && history.isNotEmpty) {
-        final lastAIMsg = history.lastWhere(
-          (m) => m['isUser'] != true,
-          orElse: () => {},
-        );
-        final lastText = lastAIMsg['text']?.toString() ?? '';
-        if (lastText.isNotEmpty) {
-          chatHint =
-              'Prior answer: ${lastText.length > 120 ? lastText.substring(0, 120) : lastText}\n';
-        }
-      }
-
-      final q = query.toLowerCase();
-      bool isAdviceQuery =
-          q.contains('reduce') ||
-          q.contains('how to') ||
-          q.contains('why') ||
-          q.contains('explain') ||
-          q.contains('guidance') ||
-          q.contains('tip') ||
-          q.contains('improve') ||
-          q.contains('what mean') ||
-          q.contains('advice');
-
-      // Single lean prompt — maximises token budget available for the response
-      final prompt = isAdviceQuery
-          ? 'You are Spendy AI, a helpful Indian finance assistant. '
-                'Provide helpful advice. Answer concisely. Do NOT use numbers unless present below.\n'
-                '$chatHint'
-                'Data: $context\n'
-                'User: $query\n'
-                'Answer:'
-          : 'You are Spendy AI, a concise Indian finance assistant. '
-                'Answer in 1-2 short sentences using ONLY the numbers below. Do NOT invent data.\n'
-                '$chatHint'
-                'Data: $context\n'
-                'User: $query\n'
-                'Answer:';
-
-      debugPrint('AI: Processing query (fresh session).');
-      await _activeSession!.addQueryChunk(Message(text: prompt, isUser: true));
-
-      debugPrint('AI: Generating response...');
-      String response = '';
-      final stream = _activeSession!.getResponseAsync();
-
-      bool shouldStop = false;
-      await for (final token in stream) {
-        if (shouldStop) continue; // drain remaining tokens without accumulating
-
-        response += token;
-
-        // Stop accumulating on char-sequence repetition (loop guard).
-        // Use a flag instead of break/nested listen to avoid two errors:
-        // 1. break → IllegalStateException (C++ engine still running on next clearSession)
-        // 2. nested await for → "Bad state: Stream has already been listened to"
-        if (response.length > 80) {
-          final tail = response.substring(response.length - 40);
-          final head = response.substring(0, response.length - 40);
-          if (head.contains(tail)) {
-            debugPrint(
-              'AI: Char-loop detected. Draining remaining stream silently.',
-            );
-
-            // Graceful cleanup: trim back to the last period or newline
-            int lastPeriod = response.lastIndexOf('.');
-            int lastNewline = response.lastIndexOf('\n');
-            int cutIndex = lastPeriod > lastNewline ? lastPeriod : lastNewline;
-
-            if (cutIndex > response.length - 60) {
-              // arbitrary buffer
-              response = response.substring(0, cutIndex + 1);
-            } else {
-              response = head.trim(); // fallback
-            }
-            shouldStop = true;
-          }
-        }
-      }
-
-      // Final cleanup: unescape newlines outputted as literal text by small models
-      response = response.replaceAll('\\n', '\n').trim();
-
-      debugPrint('AI: Response successful.');
-      return response;
-    } catch (e) {
-      debugPrint('AI Fatal Error: $e');
-      await clearSession();
-      await _handleCorruptModelError(e);
-      return 'Error: $e';
+    final debug = ChatDebug(observe: _observeTrace);
+    final transcript = AiConversation.usableHistory(history ?? const []);
+    debug.log('request', {
+      'questionChars': query.length,
+      'historyMessages': history?.length ?? 0,
+      'modelReady': _runtime.ready,
+      'usableHistoryMessages': transcript.length,
+    });
+    if (query.trim().isEmpty || query.length > AiGuardrails.maxChatChars) {
+      return 'Please ask a shorter question about your saved records.';
     }
+    final multiple = ChatBatchPlanner.isCandidate(query);
+    final refusal = ChatPolicy.unsafeOrAdviceReply(query);
+    if (refusal != null && (!multiple || !_runtime.ready)) {
+      debug.log('app_reply', {'source': 'input_safety_or_advice_policy'});
+      return refusal;
+    }
+    final identity = ChatIdentity.answer(query, transcript);
+    if (identity != null && !multiple) {
+      debug.log('app_reply', {'source': 'explicit_user_preference'});
+      return identity;
+    }
+    if (ChatHelpCatalog.isCapabilityRequest(query)) {
+      debug.log('app_reply', {'source': 'capabilities_catalog'});
+      return ChatHelpCatalog.capabilities;
+    }
+    // With a ready model there is one interpretation path. Legacy keyword
+    // fallbacks below serve basic reads/help when AI is not available.
+    if (_runtime.ready) {
+      return _answerReady(query, transcript, accountId, debug);
+    }
+    if (multiple) return conversationalSetupReply;
+    final clarification = ChatFollowupContext.clarification(
+      query,
+      history ?? const [],
+    );
+    if (clarification != null) {
+      debug.log('app_reply', {'source': 'unresolved_conversation_reference'});
+      return clarification;
+    }
+    final resolvedQuestion = ChatFollowupContext.resolvedQuestion(
+      query,
+      transcript,
+    );
+    if (resolvedQuestion != null) {
+      query = resolvedQuestion;
+      debug.log('context_resolved', {'source': 'single_app_feature'});
+    }
+    final help = ChatHelpCatalog.direct(
+      query,
+      hasHelpContext: transcript.any(
+        (m) =>
+            m['isUser'] == true &&
+            m['pending'] != true &&
+            ChatScope.appHelp('${m['text']}') &&
+            !ChatPlanConstraints.recordRequest('${m['text']}'),
+      ),
+    );
+    if (help != null) {
+      debug.log('app_reply', {'source': 'app_help_catalog'});
+      return help;
+    }
+    final policyReply = ChatPolicy.requestReply(query);
+    final normalized = ChatPolicy.normalizedQuestion(query);
+    final followup = ChatPlanConstraints.isFollowup(query);
+    final conversationPurpose = ChatScope.conversation(query, transcript);
+    if (conversationPurpose == ConversationPurpose.boundary) {
+      debug.log('app_reply', {'source': 'scope_correction'});
+      return ChatScope.boundaryReply;
+    }
+    if (policyReply != null && policyReply != ChatPolicy.scopeReply) {
+      debug.log('app_reply', {'source': 'input_policy'});
+      return policyReply;
+    }
+    try {
+      final answer = await _resolvedAnswer(query, transcript, accountId, debug);
+      if (answer != null) return answer;
+    } catch (error) {
+      debug.error('resolved_read', error);
+      return 'I could not read those records. Please try again.';
+    }
+    final hasPriorQuestion = transcript.any(
+      (m) => m['isUser'] == true && m['text'] != query,
+    );
+    final explicitPeriod = RegExp(
+      r'\b' + ChatPolicy.periodPattern + r'\b',
+    ).hasMatch(normalized);
+    // Fast, exact operations continue to work without a downloaded model.
+    if (!_runtime.ready &&
+        policyReply == null &&
+        !followup &&
+        (!hasPriorQuestion || explicitPeriod)) {
+      try {
+        return await _facts.answer(query, accountId: accountId);
+      } catch (_) {
+        return 'I could not complete that request. Please try again.';
+      }
+    }
+    if (_isAiBusy || _runtime.busy) {
+      return 'AI is processing another request. Please try again shortly.';
+    }
+    if (!_runtime.ready) {
+      try {
+        await init();
+      } catch (_) {
+        return conversationalSetupReply;
+      }
+      if (!_runtime.ready) return conversationalSetupReply;
+    }
+    return _answerReady(query, transcript, accountId, debug);
   }
 
-  Future<AIAction> parseIntent(String text) async {
-    if (_isAiBusy) {
-      return AIAction(
-        type: AIActionType.chat,
-        message: 'AI is currently busy processing another request.',
-      );
+  Future<String> _answerReady(
+    String query,
+    List<Map<String, dynamic>> transcript,
+    int? accountId,
+    ChatDebug debug,
+  ) async {
+    if (_isAiBusy || _runtime.busy) {
+      return 'AI is processing another request. Please try again shortly.';
     }
     _isAiBusy = true;
-
     try {
-      if (!_initialized || _currentModel == null) {
-        final exists = await modelExists(LocalAIModelType.qwenLite);
-        final message = exists
-            ? 'AI is initializing, please try again in a moment.'
-            : 'AI model not found. Please open the Chat screen to download it.';
-        return AIAction(type: AIActionType.chat, message: message);
-      }
-
-      // Check for local resolver first (Regex)
-      final localAction = _tryResolveLocally(text);
-      if (localAction != null) {
-        debugPrint('AI: Resolved locally via Regex.');
-        return localAction;
-      }
-
-      final now = DateTime.now();
-      final systemPrompt =
-          '''
-You are Spendy AI. Parse transaction/OCR text into JSON.
-Current Date: ${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}
-Categories: [Food, Fuel, Shopping, Rent, Travel, Health, Salary, Bills, Grocery, Other].
-Rules:
-- "edit/update" means ACTION: UPDATE.
-- Extract "merchant" if mentioned.
-- Extract "date" as YYYY-MM-DD if mentioned (handle "yesterday", "2 days ago").
-- Identify Indian context (e.g. Joseph Joseph = Fuel).
-- For OCR, find "TOTAL". OUTPUT VALID JSON ONLY.
-- If multiple items are listed, extract them into "items" list with "amount" and "category".
-- EXAMPLES:
-"edit food from 500 to 600" -> {"action": "UPDATE", "amount": 600, "category": "Food"}
-"paid 500 at zomato yesterday" -> {"action": "ADD", "amount": 500, "category": "Food", "merchant": "Zomato", "date": "2026-02-23"}
-"spent 1200 on fuel at shell" -> {"action": "ADD", "amount": 1200, "category": "Fuel", "merchant": "Shell"}
-"200 on groceries" -> {"action": "ADD", "amount": 200, "category": "Grocery"}
-"buy items 30 sugar 60 milk 40 salt" -> {"action": "ADD", "amount": 130, "items": [{"amount": 30, "category": "Sugar"}, {"amount": 60, "category": "Milk"}, {"amount": 40, "category": "Salt"}]}
-"update 500 market items 30 salt 60 sugar" -> {"action": "UPDATE", "amount": 500, "merchant": "Market", "items": [{"amount": 30, "category": "Salt"}, {"amount": 60, "category": "Sugar"}]}
-
-Input: "MART RECEIPT\nMilk: 50.0\nBread: 40.0\nTotal: 90.0"
-Output: {"action": "ADD", "amount": 90, "merchant": "Mart", "items": [{"amount": 50, "category": "Grocery"}, {"amount": 40, "category": "Grocery"}]}
-
-COMMAND: "''';
-
-      if (_activeModel == null) {
-        if (Platform.isAndroid) {
-          // Force CPU backend for Intent Parsing to prevent Native TFLite GPU Delegate dimension/shader crashes
-          _activeModel = await FlutterGemma.getActiveModel(
-            maxTokens: 1024,
-            preferredBackend: PreferredBackend.cpu,
-          );
-        } else {
-          _activeModel = await FlutterGemma.getActiveModel(maxTokens: 1024);
-        }
-      }
-
-      // Use a fresh session for intent parsing to avoid history interference
-      final session = await _activeModel!.createSession(
-        temperature: 0.0,
-        topK: 1,
+      return await ChatConversationPipeline(
+        interpreter: _interpreter ?? ModelChatInterpreter(_runtime),
+        executor: ValidatedChatRecordExecutor(
+          ChatQueryEngine(helper: _facts.helper, clock: _facts.clock),
+        ),
+        contexts: ChatQueryContextStore(_facts.helper),
+        runtime: _runtime,
+      ).answer(
+        query,
+        accountId: accountId,
+        history: transcript,
+        debug: debug,
+        observeEvidence: _observeEvidence,
+        observeDraft: _observeDraft,
+        observePlan: _observePlan,
       );
-      final fullQuery = '$systemPrompt$text"\nJSON:';
-
-      debugPrint('AI Intent Parsing: $text');
-      await session.addQueryChunk(Message(text: fullQuery, isUser: true));
-      String response = await session.getResponse();
-      await session
-          .close(); // Prevent memory leaks from dangling LLM context bindings!
-
-      if (response.trim().isEmpty) {
-        debugPrint(
-          'AI Returned Empty Intent. Retrying with temperature backoff (0.3)...',
-        );
-        final retrySession = await _activeModel!.createSession(
-          temperature: 0.3, // Slightly higher to escape deterministic deadlocks
-          topK: 20,
-        );
-        await retrySession.addQueryChunk(
-          Message(text: fullQuery, isUser: true),
-        );
-        response = await retrySession.getResponse();
-        await retrySession.close();
-        debugPrint('AI Retry Intent Raw: $response');
+    } on FormatException catch (error) {
+      debug.error('chat_pipeline', error);
+      return 'I could not reliably interpret that request. Could you rephrase it?';
+    } on TimeoutException catch (error) {
+      debug.error('chat_pipeline', error);
+      return 'I could not complete that request in time. Please try again.';
+    } on StateError catch (error) {
+      debug.error('chat_pipeline', error);
+      if (error.message == 'AI template restart required') {
+        return 'Please close and reopen Spendy to apply the AI update.';
       }
-      debugPrint('AI Raw Intent: $response');
-
-      // Clean response (remove markdown blocks if model adds them)
-      String cleaned = response.trim();
-      if (cleaned.contains('```json')) {
-        cleaned = cleaned.split('```json')[1].split('```')[0].trim();
-      } else if (cleaned.contains('```')) {
-        cleaned = cleaned.split('```')[1].split('```')[0].trim();
-      }
-
-      // Safeguard against small LLM repetition loops ("Reached max sequence length")
-      // by extracting ONLY the very first balanced JSON object.
-      final startIndex = cleaned.indexOf('{');
-      if (startIndex != -1) {
-        int braceCount = 0;
-        int endIndex = -1;
-        for (int i = startIndex; i < cleaned.length; i++) {
-          if (cleaned[i] == '{') {
-            braceCount++;
-          } else if (cleaned[i] == '}') {
-            braceCount--;
-          }
-
-          if (braceCount == 0) {
-            endIndex = i;
-            break;
-          }
-        }
-        if (endIndex != -1) {
-          cleaned = cleaned.substring(startIndex, endIndex + 1);
-        }
-      }
-
-      try {
-        final Map<String, dynamic> json = jsonDecode(cleaned);
-        return AIAction.fromJson(json, text);
-      } catch (e) {
-        // AI Response was truncated, attempt to repair partial JSON structure via Backtracking Stack.
-        try {
-          String repaired = cleaned.trim();
-          Map<String, dynamic>? parsedJson;
-
-          while (repaired.isNotEmpty) {
-            try {
-              String temp = repaired.trim();
-              if (temp.endsWith(',')) temp = temp.substring(0, temp.length - 1);
-
-              List<String> stack = [];
-              bool inString = false;
-              bool escapeNext = false;
-
-              for (int i = 0; i < temp.length; i++) {
-                String c = temp[i];
-                if (escapeNext) {
-                  escapeNext = false;
-                  continue;
-                }
-                if (c == '\\') {
-                  escapeNext = true;
-                  continue;
-                }
-                if (c == '"') {
-                  inString = !inString;
-                  continue;
-                }
-                if (!inString) {
-                  if (c == '{') {
-                    stack.add('}');
-                  } else if (c == '[') {
-                    stack.add(']');
-                  } else if (c == '}' &&
-                      stack.isNotEmpty &&
-                      stack.last == '}') {
-                    stack.removeLast();
-                  } else if (c == ']' &&
-                      stack.isNotEmpty &&
-                      stack.last == ']') {
-                    stack.removeLast();
-                  }
-                }
-              }
-
-              StringBuffer sb = StringBuffer(temp);
-              if (inString) sb.write('"');
-              for (var closing in stack.reversed) {
-                sb.write(closing);
-              }
-
-              parsedJson = jsonDecode(sb.toString());
-              if (parsedJson != null) {
-                break; // Found valid longest JSON truncation
-              }
-            } catch (_) {}
-            repaired = repaired.substring(
-              0,
-              repaired.length - 1,
-            ); // Trim last character and try again
-          }
-
-          if (parsedJson != null) {
-            return AIAction.fromJson(parsedJson, text);
-          }
-        } catch (_) {}
-
-        debugPrint('AI Intent Error: $e');
-        await clearSession();
-        return AIAction(
-          type: AIActionType.chat,
-          message: text,
-        ); // Fallback to raw text
-      }
-    } catch (e) {
-      debugPrint('AI Intent Outer Error: $e');
-      await clearSession();
-      await _handleCorruptModelError(e);
-      return AIAction(type: AIActionType.chat, message: text);
+      return 'I could not complete that request. Please try again.';
+    } catch (error) {
+      debug.error('chat_pipeline', error);
+      return 'I could not complete that request. Please try again.';
     } finally {
       _isAiBusy = false;
     }
   }
 
-  Future<String> _buildRAGContext(String query, {int? accountId}) async {
-    final q = query.toLowerCase();
-    final db = DatabaseHelper();
-    final accRepo = SqliteAccountRepository(db);
-    final txnRepo = SqliteTransactionRepository(db);
-    final goalRepo = SqliteGoalRepository(db);
-    final reminderRepo = SqliteReminderRepository(db);
-    StringBuffer context = StringBuffer();
-
-    // 1. ALWAYS ADD A SNAPSHOT (Total Balance & Month Totals)
-    final totalBalance = await accRepo.getTotalBalance(accountId: accountId);
-    final monthIncome = await txnRepo.getMonthTotal(
-      'income',
-      accountId: accountId,
+  Future<AIAction> parseIntent(String text) async {
+    AIAction fallback() => AIAction(
+      type: AIActionType.chat,
+      message:
+          'I could not verify those details. Please add the transaction manually.',
     );
-    final monthExpense = await txnRepo.getMonthTotal(
-      'expense',
-      accountId: accountId,
-    );
-
-    final now = DateTime.now();
-    final todayStart = DateTime(now.year, now.month, now.day);
-    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
-    final todayExpense = await txnRepo.getRangeTotal(
-      'expense',
-      from: todayStart,
-      to: todayEnd,
-      accountId: accountId,
-    );
-
-    final daysElapsed = now.day > 0 ? now.day : 1;
-    final dailyAverage = monthExpense / daysElapsed;
-    final projectedExpense = dailyAverage * 30;
-
-    context.writeln('--- FINANCIAL SNAPSHOT ---');
-    context.writeln('Total Balance: ₹${totalBalance.toStringAsFixed(2)}');
-    context.writeln('Today\'s Expenses: ₹${todayExpense.toStringAsFixed(2)}');
-    context.writeln('This Month Income: ₹${monthIncome.toStringAsFixed(2)}');
-    context.writeln('This Month Expenses: ₹${monthExpense.toStringAsFixed(2)}');
-    context.writeln(
-      'Average Daily Spent (This Month): ₹${dailyAverage.toStringAsFixed(2)}',
-    );
-    context.writeln(
-      'Projected Monthly Spending: ₹${projectedExpense.toStringAsFixed(2)}',
-    );
-    context.writeln('--------------------------\n');
-
-    // 2. Conditional Context based on keywords
-
-    // Transactions & Spending
-    if (q.contains('spend') ||
-        q.contains('spent') ||
-        q.contains('transaction') ||
-        q.contains('cost') ||
-        q.contains('buy') ||
-        q.contains('bought')) {
-      DateTime now = DateTime.now();
-      DateTime weekAgo = now.subtract(const Duration(days: 7));
-      final transactions = await txnRepo.getTransactions(
-        from: weekAgo,
-        limit: 10,
-        accountId: accountId,
+    if (text.trim().isEmpty || text.length > AiGuardrails.maxIntentChars) {
+      return fallback();
+    }
+    final policyReply = ChatPolicy.unsafeOrAdviceReply(text);
+    if (policyReply != null) {
+      return AIAction(type: AIActionType.chat, message: policyReply);
+    }
+    if (_isAiBusy || _runtime.busy) {
+      return AIAction(
+        type: AIActionType.chat,
+        message:
+            'AI is still finishing a request. Try again shortly. If it stays busy, restart the app.',
       );
-
-      if (transactions.isNotEmpty) {
-        context.writeln('Recent Activity (Last 7 Days):');
-        for (var t in transactions) {
-          context.writeln(
-            '- ${DateFormat('MMM d').format(t.date)}: ₹${t.amount} (${t.type}) for ${t.category} @ ${t.merchant}',
-          );
-        }
-      }
     }
-
-    // Income specifically
-    if (q.contains('income') ||
-        q.contains('earn') ||
-        q.contains('salary') ||
-        q.contains('received')) {
-      final income = await txnRepo.getTransactions(
-        type: 'income',
-        limit: 10,
-        accountId: accountId,
+    _isAiBusy = true;
+    var intentStage = 'readiness';
+    try {
+      if (!_runtime.ready) return fallback();
+      intentStage = 'local_validation';
+      final local = _tryResolveLocally(text);
+      if (local != null) {
+        return await _validateCategories(
+          AIAction.fromJson({
+            'action': local.type.name.toUpperCase(),
+            'amount': local.amount,
+            'category': local.category,
+            'merchant': local.merchant,
+          }, text),
+        );
+      }
+      intentStage = 'categories';
+      final rows = await (await _facts.helper.database).query('categories');
+      final categories = rows
+          .where((r) => r['type'] == 'expense')
+          .map((r) => r['name'])
+          .whereType<String>();
+      intentStage = 'extraction';
+      final response = await _runtime.converse(
+        VoiceIntentContract.request(text, categories),
       );
-      if (income.isNotEmpty) {
-        context.writeln('\nRecent Income Sources:');
-        for (var i in income) {
-          context.writeln(
-            '- ${DateFormat('MMM d').format(i.date)}: ₹${i.amount} from ${i.category}',
-          );
-        }
+      intentStage = 'source_validation';
+      final action = AIAction.fromJson(
+        VoiceIntentContract.decode(response, text),
+        text,
+        validationSource: VoiceAllocations.normalize(text),
+      );
+      return await _validateCategories(action);
+    } on TimeoutException {
+      return AIAction(
+        type: AIActionType.chat,
+        message:
+            'That took too long. Try again shortly. If AI stays busy, restart the app.',
+      );
+    } on FormatException catch (e) {
+      debugPrint(
+        'AI intent rejected: stage=$intentStage reason=${VoiceIntentContract.rejectionReason(e)}',
+      );
+      if (VoiceAllocations.applies(text)) {
+        return AIAction(
+          type: AIActionType.chat,
+          message: e.message == 'Split does not match total'
+              ? 'The item amounts don’t add up to the total. Try again or enter the expense manually.'
+              : 'I couldn’t verify every split item and its total. Try again or enter the expense manually.',
+        );
       }
+      return fallback();
+    } catch (e) {
+      debugPrint(
+        'AI intent rejected: stage=$intentStage error=${e.runtimeType}',
+      );
+      return fallback();
+    } finally {
+      _isAiBusy = false;
     }
+  }
 
-    // Budgets
-    if (q.contains('budget') || q.contains('limit') || q.contains('left')) {
-      final budgets = await db.queryAll('budgets');
-      if (budgets.isNotEmpty) {
-        context.writeln('\nMonthly Budgets:');
-        for (var b in budgets) {
-          context.writeln(
-            '- ${b['category']}: ₹${b['amount']} / ${b['period']}',
-          );
-        }
-      }
+  Future<AIAction> _validateCategories(AIAction action) async {
+    if (action.type == AIActionType.chat) {
+      return AIAction(
+        type: AIActionType.chat,
+        message:
+            'Please open Chat for questions, or add a transaction manually.',
+      );
     }
-
-    // Accounts
-    if (q.contains('account') ||
-        q.contains('bank') ||
-        q.contains('wallet') ||
-        q.contains('where is my money')) {
-      final accounts = await accRepo.getAll();
-      context.writeln('\nAll Accounts:');
-      for (var a in accounts) {
-        context.writeln('- ${a.name} (${a.bankName}): ₹${a.balance}');
-      }
+    final rows = await (await _facts.helper.database).query('categories');
+    final matchingCategories = rows
+        .where(
+          (r) =>
+              (r['name'] as String).toLowerCase() ==
+              action.category?.toLowerCase(),
+        )
+        .toList();
+    if (action.type == AIActionType.add &&
+        matchingCategories.isNotEmpty &&
+        matchingCategories.every((r) => r['type'] == 'income')) {
+      return AIAction(
+        type: AIActionType.chat,
+        message:
+            'Please add this income manually to check its type, account and amount.',
+      );
     }
-
-    // Goals
-    if (q.contains('goal') ||
-        q.contains('save') ||
-        q.contains('saving') ||
-        q.contains('target')) {
-      final goals = await goalRepo.getAll();
-      if (goals.isNotEmpty) {
-        context.writeln('\nSavings Progress:');
-        for (var g in goals) {
-          final percent = (g.savedAmount / g.targetAmount * 100)
-              .toStringAsFixed(1);
-          context.writeln(
-            '- ${g.name}: ₹${g.savedAmount} of ₹${g.targetAmount} ($percent%)',
-          );
-        }
-      }
-    }
-
-    // Reminders
-    if (q.contains('reminder') || q.contains('bill') || q.contains('due')) {
-      final reminders = await reminderRepo.getAll();
-      if (reminders.isNotEmpty) {
-        context.writeln('\nUpcoming Bills/Reminders:');
-        for (var r in reminders) {
-          context.writeln(
-            '- ${r.title}: ₹${r.amount} due on ${DateFormat('MMM d').format(r.dueDate)}',
-          );
-        }
-      }
-    }
-
-    return context.toString();
+    final known = {
+      for (final row in rows)
+        (row['name'] as String).toLowerCase(): row['name'] as String,
+    };
+    String category(String? value) => known[value?.toLowerCase()] ?? 'Other';
+    // Extraction lists even one expense. A single fully covering item is an
+    // ordinary transaction in the UI, rather than a one-child split.
+    final single =
+        action.type == AIActionType.add &&
+            action.items?.length == 1 &&
+            action.amount != null &&
+            (action.items!.single.amount * 100).round() ==
+                (action.amount! * 100).round()
+        ? action.items!.single
+        : null;
+    final merchant = action.merchant ?? single?.merchant;
+    return AIAction(
+      type: action.type,
+      amount: action.amount,
+      category: action.type == AIActionType.add
+          ? category(single?.category ?? action.category)
+          : action.category,
+      merchant: merchant == null
+          ? null
+          : AiGuardrails.bounded(merchant.trim(), 120),
+      originalText: action.originalText,
+      date: action.date,
+      message: action.message,
+      items: single != null
+          ? null
+          : action.items
+                ?.map(
+                  (i) => AISplitItem(
+                    amount: i.amount,
+                    category: category(i.category),
+                    merchant: i.merchant,
+                    label: i.label,
+                  ),
+                )
+                .toList(),
+    );
   }
 
   AIAction? _tryResolveLocally(String text) {
@@ -911,27 +823,5 @@ COMMAND: "''';
     }
 
     return null;
-  }
-
-  Future<void> _handleCorruptModelError(Object e) async {
-    final errStr = e.toString();
-    if (errStr.contains('Unable to open zip archive') ||
-        errStr.contains('Failed to initialize engine') ||
-        errStr.contains('RuntimeException')) {
-      if (_currentModel != null) {
-        try {
-          final directory = await getApplicationDocumentsDirectory();
-          final localPath = '${directory.path}/${_currentModel!.fileName}';
-          final file = File(localPath);
-          if (await file.exists()) {
-            await file.delete();
-            debugPrint(
-              'AI: Auto-deleted corrupt model file on crash: $localPath',
-            );
-          }
-        } catch (_) {}
-      }
-      _initialized = false;
-    }
   }
 }

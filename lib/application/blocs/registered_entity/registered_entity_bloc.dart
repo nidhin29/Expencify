@@ -5,6 +5,8 @@ import 'registered_entity_state.dart';
 
 class RegisteredEntityBloc
     extends Bloc<RegisteredEntityEvent, RegisteredEntityState> {
+  RegisteredEntityLoaded? _lastLoaded;
+  int _loadRevision = 0;
   final RegisteredEntityRepository _repository;
 
   RegisteredEntityBloc(this._repository) : super(RegisteredEntityInitial()) {
@@ -18,12 +20,31 @@ class RegisteredEntityBloc
     LoadRegisteredEntities event,
     Emitter<RegisteredEntityState> emit,
   ) async {
-    emit(RegisteredEntityLoading());
+    final request = ++_loadRevision;
+    final previous = state is RegisteredEntityLoaded
+        ? state as RegisteredEntityLoaded
+        : _lastLoaded;
+    emit(
+      previous == null
+          ? RegisteredEntityLoading()
+          : RegisteredEntityLoaded(previous.entities, refreshing: true),
+    );
     try {
       final entities = await _repository.getAll();
-      emit(RegisteredEntityLoaded(entities));
+      if (emit.isDone || request != _loadRevision) return;
+      _lastLoaded = RegisteredEntityLoaded(entities);
+      emit(_lastLoaded!);
     } catch (e) {
-      emit(RegisteredEntityError(e.toString()));
+      if (emit.isDone || request != _loadRevision) return;
+      emit(
+        previous == null
+            ? const RegisteredEntityError('Could not load saved merchants.')
+            : RegisteredEntityLoaded(
+                previous.entities,
+                refreshError:
+                    'Could not refresh. Your previous data is still shown.',
+              ),
+      );
     }
   }
 
